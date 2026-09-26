@@ -12,6 +12,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import time
 from pathlib import Path
 
@@ -30,6 +31,7 @@ def main() -> None:
     ap.add_argument("--n-train", type=int, default=150_000)
     ap.add_argument("--n-valid", type=int, default=30_000)
     ap.add_argument("--threads", type=int, default=8)
+    ap.add_argument("--neighbors", type=Path, default=None, help="state_neighbors.json")
     ap.add_argument("--out", type=Path, required=True)
     args = ap.parse_args()
 
@@ -39,13 +41,13 @@ def main() -> None:
         tr = sp.loc[~sp["is_valid"], "entity_id"].sample(args.n_train, random_state=0)
         va = sp.loc[sp["is_valid"], "entity_id"].sample(args.n_valid, random_state=0)
         s1 = s1[s1["entity_id"].isin(set(tr) | set(va))]
-        roles = pd.Series("train", index=tr.values)
-        roles[va.values] = "valid"
+        roles = pd.concat([pd.Series("train", index=tr.values), pd.Series("valid", index=va.values)])
     pools = {s: pd.read_parquet(args.clean_dir / f"{args.split}_source{s[1]}.parquet", columns=COLS)
              for s in ("S2", "S3")}
 
     t0 = time.time()
-    cands = generate(s1, pools, DEFAULT_PATHS, threads=args.threads)
+    neighbors = json.loads(args.neighbors.read_text()) if args.neighbors else None
+    cands = generate(s1, pools, DEFAULT_PATHS, threads=args.threads, neighbors=neighbors)
     if args.split == "train":
         cands["role"] = cands["s1_id"].map(roles)
     cands.to_parquet(args.out, index=False)

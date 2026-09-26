@@ -105,27 +105,32 @@ def _to_long(M: sp.csr_matrix, q_ids: np.ndarray, p_ids: np.ndarray, path: str) 
     })
 
 
-def _blocks(q_state: np.ndarray, p_state: np.ndarray):
+def _blocks(q_state: np.ndarray, p_state: np.ndarray, neighbors: dict | None = None):
     """Yield (query rows, pool rows) per state block.
 
-    A query with state s searches pool records with state s plus pool records
-    with no detected state. A query with no state searches the whole pool.
+    A query with state s searches pool records with state s, its learned
+    neighbour states, and pool records with no detected state. A query with
+    no state searches the whole pool.
     """
+    neighbors = neighbors or {}
+    empty = np.array([], np.int64)
     no_state = np.flatnonzero(p_state == "")
     by_state = pd.Series(np.arange(len(p_state))).groupby(p_state).indices
     for state, q_rows in pd.Series(np.arange(len(q_state))).groupby(q_state).indices.items():
         if state == "":
             yield q_rows, np.arange(len(p_state))
         else:
-            yield q_rows, np.concatenate([by_state.get(state, np.array([], np.int64)), no_state])
+            states = [state] + neighbors.get(state, [])
+            yield q_rows, np.concatenate([by_state.get(s, empty) for s in states] + [no_state])
 
 
-def search_path(q: pd.DataFrame, p: pd.DataFrame, path: TfidfPath, threads: int) -> pd.DataFrame:
+def search_path(q: pd.DataFrame, p: pd.DataFrame, path: TfidfPath, threads: int,
+                neighbors: dict | None = None) -> pd.DataFrame:
     Q, P = _encode(q, p, path)
     qid, pid = q["entity_id"].to_numpy(), p["entity_id"].to_numpy()
     q_state, p_state = q["addr_state"].to_numpy(), p["addr_state"].to_numpy()
     parts = []
-    for q_rows, p_rows in _blocks(q_state, p_state):
+    for q_rows, p_rows in _blocks(q_state, p_state, neighbors):
         if len(p_rows) == 0:
             continue
         M = sp_matmul_topn(Q[q_rows], P[p_rows].T.tocsr(), top_n=path.top_k, sort=True, n_threads=threads)
@@ -139,6 +144,7 @@ def generate(
     paths=DEFAULT_PATHS,
     threads: int = 8,
     verbose: bool = True,
+    neighbors: dict | None = None,
 ) -> pd.DataFrame:
     """queries: S1 rows. pools: {"S2": df, "S3": df}. Frames need entity_id, country_norm, addr_state + path columns."""
     out = []
@@ -150,7 +156,7 @@ def generate(
             merged = None
             for path in paths:
                 t0 = time.time()
-                long = search_path(q, p, path, threads)
+                long = search_path(q, p, path, threads, neighbors)
                 merged = long if merged is None else merged.merge(long, on=["s1_id", "cand_id"], how="outer")
                 if verbose:
                     print(f"  {country:>8} {src} {path.name:5} q={len(q):,} pool={len(p):,} "
