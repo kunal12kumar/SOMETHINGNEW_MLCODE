@@ -139,8 +139,11 @@ def cmd_train(args) -> None:
         feats = build_features(cands, load_records(args.clean_dir, "train", ids))
         if args.feature_cache:
             feats.to_parquet(args.feature_cache, index=False)
-    feat_cols = list(feats.columns)
-    df = pd.concat([cands[["s1_id", "cand_id", "cand_source", "role", "label"]], feats], axis=1)
+    drop = tuple(p for p in (args.drop_features or "").split(",") if p)
+    feat_cols = [c for c in feats.columns if not (drop and c.startswith(drop))]
+    if drop:
+        print(f"leaving out features starting with {drop}: {sorted(set(feats.columns) - set(feat_cols))}", flush=True)
+    df = pd.concat([cands[["s1_id", "cand_id", "cand_source", "role", "label"]], feats[feat_cols]], axis=1)
 
     params = {**PARAMS, "learning_rate": args.lr, "num_leaves": args.leaves}
     tr, va = df[df["role"] == "train"].reset_index(drop=True), df[df["role"] == "valid"].reset_index(drop=True)
@@ -151,6 +154,11 @@ def cmd_train(args) -> None:
     va["p"] = predict(models, va)
     valid_ids = queries.loc[queries["role"] == "valid", "s1_id"]
     best = tune(va, valid_ids, gt[gt["s1_id"].isin(set(valid_ids))], "p")
+    if args.threshold is not None:
+        # Test has more look-alike distractors than validation, so a slightly higher
+        # threshold than the validation optimum can be chosen deliberately.
+        fixed = macro_f05(valid_ids, decide(va, "p", args.threshold, True), gt[gt["s1_id"].isin(set(valid_ids))])
+        best = {"owner": True, "threshold": args.threshold, "macro_f05": fixed, "validation_best": best}
     print("best:", best)
 
     args.model_dir.mkdir(parents=True, exist_ok=True)
@@ -187,6 +195,8 @@ def main() -> None:
     t.add_argument("--lr", type=float, default=PARAMS["learning_rate"])
     t.add_argument("--leaves", type=int, default=PARAMS["num_leaves"])
     t.add_argument("--feature-cache", type=Path, default=None, help="parquet to reuse features across runs")
+    t.add_argument("--drop-features", default="", help="comma-separated feature name prefixes to leave out")
+    t.add_argument("--threshold", type=float, default=None, help="fix the threshold instead of the validation best")
     t.add_argument("--addr-k", type=int, default=0, help="keep addr-path top-K per source (0 = all)")
     t.add_argument("--both-k", type=int, default=0, help="keep combined-path top-K per source (0 = all)")
     args = ap.parse_args()
