@@ -13,6 +13,7 @@ from rapidfuzz.distance import JaroWinkler
 REC_COLS = [
     "entity_id", "name_norm", "name_core", "name_alias", "name_initials", "name_legal",
     "name_translit", "addr_norm", "addr_state", "addr_city", "addr_numbers", "addr_missing",
+    "name_core_freq",
 ]
 RETRIEVAL_COLS = ["addr_score", "addr_rank", "both_score", "both_rank", "n_paths"]
 
@@ -67,15 +68,23 @@ def pair_features(pairs: pd.DataFrame, recs: pd.DataFrame, workers: int = -1) ->
     f["core_len_a"] = np.fromiter((len(s) for s in ac), np.int16, len(ac))
     f["core_len_b"] = np.fromiter((len(s) for s in bc), np.int16, len(bc))
     f["any_translit"] = (a["name_translit"].values | b["name_translit"].values).astype(np.int8)
+    # How common each core name is in the pool: rare exact matches are strong evidence.
+    f["core_freq_a"] = np.log1p(a["name_core_freq"].to_numpy(dtype=np.float32))
+    f["core_freq_b"] = np.log1p(b["name_core_freq"].to_numpy(dtype=np.float32))
+    f["addr_missing_b"] = b["addr_missing"].to_numpy().astype(np.int8)
 
     # Addresses
     f["addr_tset"] = _sim(ad, bd, fuzz.token_set_ratio, workers)
     f["addr_tsort"] = _sim(ad, bd, fuzz.token_sort_ratio, workers)
     f["addr_partial"] = _sim(ad, bd, fuzz.partial_token_set_ratio, workers)
     f["num_tset"] = _sim(anum, bnum, fuzz.token_set_ratio, workers)
+    # Near-equal numbers: a dropped or extra digit ("4120" vs "412") scores 100 here.
+    f["num_ptset"] = _sim(anum, bnum, fuzz.partial_token_set_ratio, workers)
     f["num_exact"] = _eq(anum, bnum)
-    first_num = lambda x: np.array([s.split(" ")[-1] if s else "" for s in x], dtype=object)
-    f["num_max_eq"] = _eq(first_num(anum), first_num(bnum))
+    max_num = lambda x: np.array([s.split(" ")[-1] if s else "" for s in x], dtype=object)
+    amax, bmax = max_num(anum), max_num(bnum)
+    f["num_max_eq"] = _eq(amax, bmax)
+    f["num_max_ratio"] = np.where((amax != "") & (bmax != ""), _sim(amax, bmax, fuzz.ratio, workers), -1).astype(np.float32)
     f["city_eq"] = _eq(g(a, "addr_city"), g(b, "addr_city"))
     f["city_ratio"] = _sim(g(a, "addr_city"), g(b, "addr_city"), fuzz.ratio, workers)
     f["state_eq"] = _eq(g(a, "addr_state"), g(b, "addr_state"))

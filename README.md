@@ -26,17 +26,19 @@ python -m ber.fill_state --clean-dir $WORK/clean
 python -m ber.splits --clean-dir $WORK/clean --out $WORK/splits.parquet
 # 4. States often swapped between sources, learned from training labels
 python -m ber.state_neighbors --data-dir $DATA --clean-dir $WORK/clean --out $WORK/state_neighbors.json
+# 4b. How common each core name is (per split, per country)
+python -m ber.name_freq --clean-dir $WORK/clean
 # 5. Training candidates (150k training + 30k validation S1)
 python -m ber.run_candidates --split train --clean-dir $WORK/clean --splits $WORK/splits.parquet \
     --n-train 150000 --n-valid 30000 --neighbors $WORK/state_neighbors.json --out $WORK/cands_train.parquet
-# 6. Train matcher, tune threshold on validation macro F0.5
+# 6. Train matcher, tune threshold on validation macro F0.5 (shipped model: models/v2)
 python -m ber.matcher train --data-dir $DATA --clean-dir $WORK/clean \
     --cands $WORK/cands_train.parquet --model-dir $WORK/model
 # 7. Test candidates and prediction -> output/matching_results.tsv, output/candidate_pairs.tsv
 python -m ber.run_candidates --split test --clean-dir $WORK/clean \
     --neighbors $WORK/state_neighbors.json --out $WORK/cands_test.parquet
 python -m ber.predict --clean-dir $WORK/clean --cands $WORK/cands_test.parquet \
-    --model-dir $WORK/model --out-dir output
+    --model-dir models/v2 --out-dir output
 ```
 
 `notebooks/colab_pipeline.ipynb` runs the same steps on Colab.
