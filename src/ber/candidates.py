@@ -8,6 +8,8 @@ path are kept as features for the matcher.
 Paths implemented here (CPU):
   name   char 3-gram TF-IDF on the normalised name (includes "dba" aliases)
   addr   word TF-IDF on the normalised address (street words, numbers, city)
+  both   name and address vectors combined, so a common name only ranks
+         high when the address agrees too
   dense  (added later on GPU) fine-tuned bi-encoder, same output format
 
 Output: one parquet row per (s1_id, cand_id) with per-path score and rank.
@@ -25,36 +27,56 @@ from sparse_dot_topn import sp_matmul_topn
 
 
 @dataclass(frozen=True)
-class TfidfPath:
-    name: str
+class Field:
     column: str
     analyzer: str
     ngram: tuple[int, int]
-    top_k: int
+    weight: float = 1.0
     min_df: int = 1
     max_df: float = 1.0
 
 
+@dataclass(frozen=True)
+class TfidfPath:
+    """One search path. Several fields are weighted and concatenated into one vector."""
+    name: str
+    fields: tuple[Field, ...]
+    top_k: int
+
+
+NAME = Field("name_norm", "char_wb", (3, 3), min_df=2)
+ADDR = Field("addr_norm", "word", (1, 1), max_df=0.2)
+
 DEFAULT_PATHS = (
-    TfidfPath("name", "name_norm", "char_wb", (3, 3), top_k=20, min_df=2),
-    TfidfPath("addr", "addr_norm", "word", (1, 1), top_k=20, max_df=0.2),
+    TfidfPath("name", (NAME,), top_k=10),
+    TfidfPath("addr", (ADDR,), top_k=10),
+    TfidfPath("both", (Field("name_norm", "char_wb", (3, 3), 0.6, min_df=2),
+                       Field("addr_norm", "word", (1, 1), 0.4, max_df=0.2)), top_k=20),
 )
 
 
-def _vectorizer(path: TfidfPath) -> TfidfVectorizer:
+def _vectorizer(f: Field) -> TfidfVectorizer:
     kw = dict(
-        analyzer=path.analyzer, ngram_range=path.ngram, min_df=path.min_df, max_df=path.max_df,
+        analyzer=f.analyzer, ngram_range=f.ngram, min_df=f.min_df, max_df=f.max_df,
         sublinear_tf=True, dtype=np.float32, lowercase=False,
     )
-    if path.analyzer == "word":
+    if f.analyzer == "word":
         kw["token_pattern"] = r"(?u)\b\w+\b"
     return TfidfVectorizer(**kw)
 
 
-def _topk(q_text: pd.Series, p_text: pd.Series, path: TfidfPath, threads: int) -> sp.csr_matrix:
-    vec = _vectorizer(path)
-    P = vec.fit_transform(p_text.values)
-    Q = vec.transform(q_text.values)
+def _encode(q: pd.DataFrame, p: pd.DataFrame, path: TfidfPath) -> tuple[sp.csr_matrix, sp.csr_matrix]:
+    """Fit each field on the pool; weight by sqrt(w) so cosine = sum of w * field cosine."""
+    qs, ps = [], []
+    for f in path.fields:
+        vec = _vectorizer(f)
+        ps.append(vec.fit_transform(p[f.column].fillna("").values) * np.sqrt(f.weight))
+        qs.append(vec.transform(q[f.column].fillna("").values) * np.sqrt(f.weight))
+    return sp.hstack(qs, format="csr"), sp.hstack(ps, format="csr")
+
+
+def _topk(q: pd.DataFrame, p: pd.DataFrame, path: TfidfPath, threads: int) -> sp.csr_matrix:
+    Q, P = _encode(q, p, path)
     return sp_matmul_topn(Q, P.T.tocsr(), top_n=path.top_k, sort=True, n_threads=threads)
 
 
@@ -86,10 +108,8 @@ def generate(
             merged = None
             for path in paths:
                 t0 = time.time()
-                q_text = q[path.column].fillna("")
-                keep = q_text.str.len() > 0
-                M = _topk(q_text[keep], p[path.column].fillna(""), path, threads)
-                long = _to_long(M, q["entity_id"].values[keep.values], p["entity_id"].values, path.name)
+                M = _topk(q, p, path, threads)
+                long = _to_long(M, q["entity_id"].values, p["entity_id"].values, path.name)
                 merged = long if merged is None else merged.merge(long, on=["s1_id", "cand_id"], how="outer")
                 if verbose:
                     print(f"  {country:>8} {src} {path.name:5} q={len(q):,} pool={len(p):,} "
