@@ -13,7 +13,7 @@ from rapidfuzz.distance import JaroWinkler
 REC_COLS = [
     "entity_id", "name_norm", "name_core", "name_alias", "name_initials", "name_legal",
     "name_translit", "addr_norm", "addr_state", "addr_city", "addr_numbers", "addr_missing",
-    "name_core_freq",
+    "name_core_freq", "addr_key_freq",
 ]
 RETRIEVAL_COLS = ["addr_score", "addr_rank", "both_score", "both_rank", "n_paths"]
 
@@ -89,7 +89,48 @@ def pair_features(pairs: pd.DataFrame, recs: pd.DataFrame, workers: int = -1) ->
     f["city_ratio"] = _sim(g(a, "addr_city"), g(b, "addr_city"), fuzz.ratio, workers)
     f["state_eq"] = _eq(g(a, "addr_state"), g(b, "addr_state"))
     f["addr_missing_any"] = (a["addr_missing"].values | b["addr_missing"].values).astype(np.int8)
+    # How many pool records share this location (numbers + city): a shared building is weak evidence.
+    f["addr_freq_a"] = np.log1p(a["addr_key_freq"].to_numpy(dtype=np.float32))
+    f["addr_freq_b"] = np.log1p(b["addr_key_freq"].to_numpy(dtype=np.float32))
+
+    f = pd.concat([f, _support_features(pairs["s1_id"].to_numpy(), f, bc, bd, bnum, workers)], axis=1)
     return f
+
+
+def _support_features(s1: np.ndarray, f: pd.DataFrame, bc, bd, bnum, workers: int) -> pd.DataFrame:
+    """Compare each candidate with the strongest *other* candidate of the same S1 entity.
+
+    An entity has 3.5 true matches on average; a candidate that looks nothing like
+    the S1 record (trade name, empty address) can still look just like another
+    record that clearly matches. Requires every candidate of an S1 entity to be
+    in the same call.
+    """
+    q = (f["name_best"].to_numpy(np.float32) + f["addr_tset"].to_numpy(np.float32))
+    n = len(s1)
+    codes = pd.factorize(s1)[0]
+    order = np.lexsort((-q, codes))
+    sorted_codes = codes[order]
+    first = np.r_[True, sorted_codes[1:] != sorted_codes[:-1]]
+    group_start = np.maximum.accumulate(np.where(first, np.arange(n), 0))
+    top1 = order[group_start]
+    has_second = np.r_[sorted_codes[1:] == sorted_codes[:-1], False]
+    second_pos = np.where(has_second[group_start], group_start + 1, -1)
+    top2 = np.where(second_pos >= 0, order[np.clip(second_pos, 0, n - 1)], -1)
+
+    anchor = np.empty(n, np.int64)
+    anchor[order] = np.where(order == top1, top2, top1)
+    ok = anchor >= 0
+    idx = np.where(ok, anchor, 0)
+
+    out = pd.DataFrame(index=f.index)
+    is_top = np.zeros(n, np.int8)
+    is_top[top1] = 1
+    out["sup_is_top"] = is_top
+    out["sup_anchor_q"] = np.where(ok, q[idx], -1).astype(np.float32)
+    out["sup_name"] = np.where(ok, _sim(bc, bc[idx], fuzz.token_set_ratio, workers), -1).astype(np.float32)
+    out["sup_addr"] = np.where(ok, _sim(bd, bd[idx], fuzz.token_set_ratio, workers), -1).astype(np.float32)
+    out["sup_num"] = np.where(ok, _sim(bnum, bnum[idx], fuzz.token_set_ratio, workers), -1).astype(np.float32)
+    return out
 
 
 def group_features(df: pd.DataFrame, score: str) -> pd.DataFrame:

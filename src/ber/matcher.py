@@ -42,11 +42,17 @@ def load_records(clean_dir: Path, split: str, ids: set) -> pd.DataFrame:
 
 
 def build_features(cands: pd.DataFrame, recs: pd.DataFrame, chunk: int = 2_000_000) -> pd.DataFrame:
-    out = []
-    for i in range(0, len(cands), chunk):
+    """cands must be sorted by s1_id: chunks are cut only at S1 boundaries (support features need whole groups)."""
+    s1 = cands["s1_id"].to_numpy()
+    out, i = [], 0
+    while i < len(cands):
+        j = min(i + chunk, len(cands))
+        while j < len(cands) and s1[j] == s1[j - 1]:
+            j += 1
         t0 = time.time()
-        out.append(pair_features(cands.iloc[i : i + chunk], recs))
-        print(f"  features {min(i + chunk, len(cands)):,}/{len(cands):,} ({time.time() - t0:.0f}s)", flush=True)
+        out.append(pair_features(cands.iloc[i:j], recs))
+        print(f"  features {j:,}/{len(cands):,} ({time.time() - t0:.0f}s)", flush=True)
+        i = j
     return pd.concat(out)
 
 
@@ -104,7 +110,7 @@ def tune(df: pd.DataFrame, s1_ids, truth: pd.DataFrame, score: str) -> dict:
 
 
 def cmd_train(args) -> None:
-    cands = pd.read_parquet(args.cands)
+    cands = pd.read_parquet(args.cands).sort_values("s1_id", kind="stable").reset_index(drop=True)
     queries = pd.read_parquet(args.cands.with_name(args.cands.stem + "_queries.parquet"))
     gt = read_ground_truth(args.data_dir).rename(columns={"source1_entity_id": "s1_id", "matched_entity_id": "cand_id"})
     gt = gt[gt["s1_id"].isin(set(queries["s1_id"]))]
