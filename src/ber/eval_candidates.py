@@ -17,7 +17,7 @@ from .candidates import DEFAULT_PATHS, generate
 from .io import read_ground_truth
 
 COLS = ["entity_id", "country_norm", "business_name", "business_address",
-        "name_norm", "name_core", "name_alias", "addr_norm", "addr_city", "addr_numbers"]
+        "name_norm", "name_core", "name_alias", "addr_norm", "addr_city", "addr_numbers", "addr_state"]
 
 
 def recall_table(cands: pd.DataFrame, truth: pd.DataFrame, paths, ks=(5, 10, 20)) -> pd.DataFrame:

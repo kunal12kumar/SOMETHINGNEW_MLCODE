@@ -34,6 +34,25 @@ class Field:
     weight: float = 1.0
     min_df: int = 1
     max_df: float = 1.0
+    query_top: int = 0  # keep only the query's N highest-weight (rarest) features; 0 = all
+
+
+def _keep_top_per_row(M: sp.csr_matrix, n: int) -> sp.csr_matrix:
+    """Keep the n largest entries of each row, then re-normalise rows to unit length."""
+    if n <= 0:
+        return M
+    M = M.tocsr()
+    rows = np.repeat(np.arange(M.shape[0]), np.diff(M.indptr))
+    order = np.lexsort((-M.data, rows))
+    rank = np.empty(len(order), np.int64)
+    starts = np.repeat(M.indptr[:-1], np.diff(M.indptr))
+    rank[order] = np.arange(len(order)) - starts
+    keep = rank < n
+    out = sp.csr_matrix((M.data[keep], M.indices[keep], np.r_[0, np.cumsum(np.bincount(rows[keep], minlength=M.shape[0]))]),
+                        shape=M.shape)
+    norms = np.sqrt(np.asarray(out.multiply(out).sum(axis=1)).ravel())
+    norms[norms == 0] = 1.0
+    return sp.diags(1.0 / norms.astype(np.float32)) @ out
 
 
 @dataclass(frozen=True)
@@ -44,12 +63,10 @@ class TfidfPath:
     top_k: int
 
 
-NAME = Field("name_norm", "char_wb", (3, 3), min_df=2)
-ADDR = Field("addr_norm", "word", (1, 1), max_df=0.2)
-
+# A name-only path was dropped: 17x slower than "both" and it added little
+# recall on top of it.
 DEFAULT_PATHS = (
-    TfidfPath("name", (NAME,), top_k=10),
-    TfidfPath("addr", (ADDR,), top_k=10),
+    TfidfPath("addr", (Field("addr_norm", "word", (1, 1), max_df=0.2),), top_k=10),
     TfidfPath("both", (Field("name_norm", "char_wb", (3, 3), 0.6, min_df=2),
                        Field("addr_norm", "word", (1, 1), 0.4, max_df=0.2)), top_k=20),
 )
@@ -71,24 +88,49 @@ def _encode(q: pd.DataFrame, p: pd.DataFrame, path: TfidfPath) -> tuple[sp.csr_m
     for f in path.fields:
         vec = _vectorizer(f)
         ps.append(vec.fit_transform(p[f.column].fillna("").values) * np.sqrt(f.weight))
-        qs.append(vec.transform(q[f.column].fillna("").values) * np.sqrt(f.weight))
+        Qf = _keep_top_per_row(vec.transform(q[f.column].fillna("").values), f.query_top)
+        qs.append(Qf * np.sqrt(f.weight))
     return sp.hstack(qs, format="csr"), sp.hstack(ps, format="csr")
-
-
-def _topk(q: pd.DataFrame, p: pd.DataFrame, path: TfidfPath, threads: int) -> sp.csr_matrix:
-    Q, P = _encode(q, p, path)
-    return sp_matmul_topn(Q, P.T.tocsr(), top_n=path.top_k, sort=True, n_threads=threads)
 
 
 def _to_long(M: sp.csr_matrix, q_ids: np.ndarray, p_ids: np.ndarray, path: str) -> pd.DataFrame:
     counts = np.diff(M.indptr)
-    rank = np.concatenate([np.arange(c, dtype=np.int16) for c in counts]) if len(counts) else np.array([], np.int16)
+    starts = np.repeat(M.indptr[:-1], counts)
+    rank = (np.arange(M.nnz) - starts + 1).astype(np.int16)
     return pd.DataFrame({
         "s1_id": np.repeat(q_ids, counts),
         "cand_id": p_ids[M.indices],
         f"{path}_score": M.data.astype(np.float32),
-        f"{path}_rank": rank + 1,
+        f"{path}_rank": rank,
     })
+
+
+def _blocks(q_state: np.ndarray, p_state: np.ndarray):
+    """Yield (query rows, pool rows) per state block.
+
+    A query with state s searches pool records with state s plus pool records
+    with no detected state. A query with no state searches the whole pool.
+    """
+    no_state = np.flatnonzero(p_state == "")
+    by_state = pd.Series(np.arange(len(p_state))).groupby(p_state).indices
+    for state, q_rows in pd.Series(np.arange(len(q_state))).groupby(q_state).indices.items():
+        if state == "":
+            yield q_rows, np.arange(len(p_state))
+        else:
+            yield q_rows, np.concatenate([by_state.get(state, np.array([], np.int64)), no_state])
+
+
+def search_path(q: pd.DataFrame, p: pd.DataFrame, path: TfidfPath, threads: int) -> pd.DataFrame:
+    Q, P = _encode(q, p, path)
+    qid, pid = q["entity_id"].to_numpy(), p["entity_id"].to_numpy()
+    q_state, p_state = q["addr_state"].to_numpy(), p["addr_state"].to_numpy()
+    parts = []
+    for q_rows, p_rows in _blocks(q_state, p_state):
+        if len(p_rows) == 0:
+            continue
+        M = sp_matmul_topn(Q[q_rows], P[p_rows].T.tocsr(), top_n=path.top_k, sort=True, n_threads=threads)
+        parts.append(_to_long(M, qid[q_rows], pid[p_rows], path.name))
+    return pd.concat(parts, ignore_index=True)
 
 
 def generate(
@@ -98,7 +140,7 @@ def generate(
     threads: int = 8,
     verbose: bool = True,
 ) -> pd.DataFrame:
-    """queries: S1 rows. pools: {"S2": df, "S3": df}. All frames need entity_id, country_norm."""
+    """queries: S1 rows. pools: {"S2": df, "S3": df}. Frames need entity_id, country_norm, addr_state + path columns."""
     out = []
     for country, q in queries.groupby("country_norm", sort=False):
         for src, pool in pools.items():
@@ -108,8 +150,7 @@ def generate(
             merged = None
             for path in paths:
                 t0 = time.time()
-                M = _topk(q, p, path, threads)
-                long = _to_long(M, q["entity_id"].values, p["entity_id"].values, path.name)
+                long = search_path(q, p, path, threads)
                 merged = long if merged is None else merged.merge(long, on=["s1_id", "cand_id"], how="outer")
                 if verbose:
                     print(f"  {country:>8} {src} {path.name:5} q={len(q):,} pool={len(p):,} "
