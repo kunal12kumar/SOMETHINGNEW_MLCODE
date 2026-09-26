@@ -56,6 +56,17 @@ def build_features(cands: pd.DataFrame, recs: pd.DataFrame, chunk: int = 2_000_0
     return pd.concat(out)
 
 
+def trim_candidates(cands: pd.DataFrame, addr_k: int, both_k: int) -> pd.DataFrame:
+    """Keep a pair if it is within the addr top-K or the combined top-K of its source (0 = no trim)."""
+    if not addr_k and not both_k:
+        return cands
+    keep = cands["addr_rank"].between(1, addr_k or 10**6) | cands["both_rank"].between(1, both_k or 10**6)
+    out = cands[keep].copy()
+    out["n_paths"] = ((out["addr_rank"].between(1, addr_k or 10**6)).astype(np.int8)
+                      + (out["both_rank"].between(1, both_k or 10**6)).astype(np.int8))
+    return out
+
+
 def _fold_of(ids: pd.Series) -> np.ndarray:
     return (pd.util.hash_pandas_object(ids, index=False).to_numpy() % N_FOLDS).astype(int)
 
@@ -110,7 +121,8 @@ def tune(df: pd.DataFrame, s1_ids, truth: pd.DataFrame, score: str) -> dict:
 
 
 def cmd_train(args) -> None:
-    cands = pd.read_parquet(args.cands).sort_values("s1_id", kind="stable").reset_index(drop=True)
+    cands = trim_candidates(pd.read_parquet(args.cands), args.addr_k, args.both_k)
+    cands = cands.sort_values("s1_id", kind="stable").reset_index(drop=True)
     queries = pd.read_parquet(args.cands.with_name(args.cands.stem + "_queries.parquet"))
     gt = read_ground_truth(args.data_dir).rename(columns={"source1_entity_id": "s1_id", "matched_entity_id": "cand_id"})
     gt = gt[gt["s1_id"].isin(set(queries["s1_id"]))]
@@ -147,7 +159,8 @@ def cmd_train(args) -> None:
     models["stage2"].save_model(str(args.model_dir / "stage2.txt"))
     (args.model_dir / "config.json").write_text(json.dumps(
         {"feat_cols": feat_cols, "stage2_cols": models["stage2_cols"], **best,
-         "rounds": args.rounds, "learning_rate": args.lr, "num_leaves": args.leaves}, indent=2))
+         "rounds": args.rounds, "learning_rate": args.lr, "num_leaves": args.leaves,
+         "addr_k": args.addr_k, "both_k": args.both_k}, indent=2))
     imp = pd.Series(models["stage2"].feature_importance("gain"), index=models["stage2_cols"])
     print((imp / imp.sum()).sort_values(ascending=False).head(20).round(4).to_string())
 
@@ -174,6 +187,8 @@ def main() -> None:
     t.add_argument("--lr", type=float, default=PARAMS["learning_rate"])
     t.add_argument("--leaves", type=int, default=PARAMS["num_leaves"])
     t.add_argument("--feature-cache", type=Path, default=None, help="parquet to reuse features across runs")
+    t.add_argument("--addr-k", type=int, default=0, help="keep addr-path top-K per source (0 = all)")
+    t.add_argument("--both-k", type=int, default=0, help="keep combined-path top-K per source (0 = all)")
     args = ap.parse_args()
     if args.cmd == "train":
         cmd_train(args)

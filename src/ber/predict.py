@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 
 from .features import pair_features
-from .matcher import decide, load_models, load_records, predict
+from .matcher import decide, load_models, load_records, predict, trim_candidates
 
 
 def write_id_lists(s1_ids: pd.Series, pairs: pd.DataFrame, id_col: str, path: Path) -> None:
@@ -64,8 +64,9 @@ def main() -> None:
     models, cfg = load_models(args.model_dir)
     threshold = cfg["threshold"] if args.threshold is None else args.threshold
     s1 = pd.read_parquet(args.clean_dir / "test_source1.parquet", columns=["entity_id", "country_norm"])
-    cands = pd.read_parquet(args.cands)
-    print(f"{len(cands):,} candidate pairs for {len(s1):,} test S1", flush=True)
+    # Trim the shortlist exactly as the model was trained, so candidate_pairs.tsv is what the model scores.
+    cands = trim_candidates(pd.read_parquet(args.cands), cfg.get("addr_k", 0), cfg.get("both_k", 0))
+    print(f"{len(cands):,} candidate pairs for {len(s1):,} test S1 ({len(cands) / len(s1):.1f} per S1)", flush=True)
 
     scored = score_in_batches(cands, args.clean_dir, models, args.batch_s1)
     if args.scores_out:
