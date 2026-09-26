@@ -138,6 +138,7 @@ def _name_tokens(text: str) -> list[str]:
     text = text.replace("&", " and ").replace("@", " at ")
     text = _DOMAIN.sub(r" \1 ", text)
     tokens = [_fix_leet(t) for t in _NON_WORD.sub(" ", text).split()]
+    tokens = [lx.SHARED_TOKENS.get(t, t) for t in tokens]
     return _canonical_legal(_join_single_letters(tokens))
 
 
@@ -280,6 +281,7 @@ def normalize_address(raw: str, country: str) -> dict:
             elif t == "r" and toks and toks[-1].isdigit():
                 t = "rue"
             t = lx.ADDRESS_ABBREV.get(t, t)
+            t = lx.SHARED_TOKENS.get(t, t)
             t = lx.CITY_ALIASES.get(t, t)
             toks.append(t)
         toks = _dedupe_adjacent(toks)

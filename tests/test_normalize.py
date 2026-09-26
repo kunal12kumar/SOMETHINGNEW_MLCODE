@@ -79,8 +79,24 @@ def test_address_parts(raw, country, state, city, numbers):
 def test_abbreviations_expand_the_same_way():
     a = normalize_address("105 ELM ST, MORGANTON, NC", "US")
     b = normalize_address("105 Elm Street, Morganton, North Carolina", "US")
-    assert a["addr_norm"] == b["addr_norm"] == "105 elm street morganton"
+    assert a["addr_norm"] == b["addr_norm"] == "105 elm st morganton"
     assert a["addr_state"] == b["addr_state"] == "north carolina"
+
+
+def test_saint_and_st_agree():
+    a = normalize_address("R. RENÉ GUILLOUZO, ST.-NAZAIRE, Pays de la Loire", "France")
+    b = normalize_address("4 Rue René Guillouzo, Saint-Nazaire, Pays de la Loire", "France")
+    assert a["addr_city"] == b["addr_city"] == "st nazaire"
+
+
+def test_trading_as_is_an_alias():
+    out = normalize_name("Novixylonyla trading as Infirmiers Comite EURL")
+    assert out["name_core"] == "novixylonyla"
+    assert out["name_alias"] == "infirmiers comite"
+
+
+def test_cours_abbreviation():
+    assert "cours" in normalize_address("No. 29 Crs François Bart, Dunkerque, Nord", "France")["addr_norm"]
 
 
 def test_french_rue_only_after_number():

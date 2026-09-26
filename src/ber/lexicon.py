@@ -30,11 +30,20 @@ LEGAL_BIGRAMS = {("pra", "li"): "pvt ltd", ("p", "ltd"): "pvt ltd"}
 HONORIFICS = {"mr", "mrs", "ms", "dr", "messrs", "m/s"}
 
 # Alias markers: text on either side is an alternative name.
-ALIAS_MARKERS = {"aka", "a/k/a", "dba", "d/b/a", "t/a", "fka", "f/k/a"}
+ALIAS_MARKERS = {
+    "aka", "a/k/a", "dba", "d/b/a", "t/a", "fka", "f/k/a", "o/a",
+    "trading as", "doing business as", "operating as", "also known as", "formerly known as",
+}
+
+# Words that mean the same thing written differently, mapped to one token in
+# both names and addresses. "St" is "Street" in US addresses but "Saint" in
+# place names ("St.-Nazaire" = "Saint-Nazaire"); one shared token keeps both
+# spellings equal without having to guess which is meant.
+SHARED_TOKENS = {"street": "st", "saint": "st", "sainte": "ste"}
 
 # Address abbreviations -> full word. Street types, building terms, French forms.
 ADDRESS_ABBREV = {
-    "st": "street", "str": "street", "ave": "avenue", "av": "avenue",
+    "str": "st", "ave": "avenue", "av": "avenue", "crs": "cours", "bvd": "boulevard",
     "rd": "road", "dr": "drive", "ln": "lane", "blvd": "boulevard",
     "bd": "boulevard", "bld": "boulevard", "ct": "court", "cir": "circle",
     "hwy": "highway", "pkwy": "parkway", "pky": "parkway", "pl": "place",
