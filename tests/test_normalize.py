@@ -95,6 +95,17 @@ def test_trading_as_is_an_alias():
     assert out["name_alias"] == "infirmiers comite"
 
 
+@pytest.mark.parametrize("raw", [
+    "Dovadovadrex formerly known as Satterwhite and Massengill PLLC",
+    "Dovadovadrex Formerly Satterwhite and Massengill PLLC",
+    "Dovadovadrex doing business as Satterwhite and Massengill PLLC",
+])
+def test_formerly_and_long_markers(raw):
+    out = normalize_name(raw)
+    assert out["name_core"] == "dovadovadrex"
+    assert out["name_alias"] == "satterwhite and massengill"
+
+
 def test_cours_abbreviation():
     assert "cours" in normalize_address("No. 29 Crs François Bart, Dunkerque, Nord", "France")["addr_norm"]
 

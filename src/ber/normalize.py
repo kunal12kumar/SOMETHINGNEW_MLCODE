@@ -85,7 +85,10 @@ _LEET = str.maketrans({"0": "o", "1": "l", "3": "e", "4": "a", "5": "s", "7": "t
 _ORDINAL = re.compile(r"^\d+(st|nd|rd|th)$")
 _DOMAIN = re.compile(r"\b(?:www\.)?([a-z0-9-]+)\.(?:com|net|org|biz|info|co\.in|in|co|fr|us|io)\b")
 _BRACKETED = re.compile(r"[\(\[\{][^\)\]\}]*[\)\]\}]")
-_ALIAS_SPLIT = re.compile(r"\s(?:" + "|".join(re.escape(m) for m in lx.ALIAS_MARKERS) + r")\s")
+# Longest markers first, so "formerly known as" is not cut after "formerly".
+_ALIAS_SPLIT = re.compile(
+    r"\s(?:" + "|".join(re.escape(m) for m in sorted(lx.ALIAS_MARKERS, key=len, reverse=True)) + r")\s"
+)
 _NON_WORD = re.compile(r"[^a-z0-9]+")
 _HASH_TAG = re.compile(r"#\s*\d+")
 

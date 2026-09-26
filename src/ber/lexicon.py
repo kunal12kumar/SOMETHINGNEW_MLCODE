@@ -32,7 +32,7 @@ HONORIFICS = {"mr", "mrs", "ms", "dr", "messrs", "m/s"}
 # Alias markers: text on either side is an alternative name.
 ALIAS_MARKERS = {
     "aka", "a/k/a", "dba", "d/b/a", "t/a", "fka", "f/k/a", "o/a",
-    "trading as", "doing business as", "operating as", "also known as", "formerly known as",
+    "trading as", "doing business as", "operating as", "also known as", "formerly known as", "formerly",
 }
 
 # Words that mean the same thing written differently, mapped to one token in
