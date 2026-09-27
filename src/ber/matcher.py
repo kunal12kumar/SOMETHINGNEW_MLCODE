@@ -154,6 +154,16 @@ def cmd_train(args) -> None:
     cands = cands.merge(gt.assign(label=1), on=["s1_id", "cand_id"], how="left")
     cands["label"] = cands["label"].fillna(0).astype(np.int8)
     cands, extra = add_extra_scores(cands, args.extra_scores)
+    if extra and args.require_extra:
+        # Keep only S1 entities whose every candidate has the external score.
+        bad = cands[extra].isna().any(axis=1).groupby(cands["s1_id"]).transform("any")
+        dropped_valid = cands.loc[bad & (cands["role"] == "valid"), "s1_id"].nunique()
+        assert dropped_valid == 0, f"{dropped_valid} validation S1 lack external scores"
+        cands = cands[~bad].reset_index(drop=True)
+        kept = set(cands["s1_id"])
+        queries = queries[queries["s1_id"].isin(kept) | (queries["role"] == "valid")]
+        gt = gt[gt["s1_id"].isin(kept) | gt["s1_id"].isin(set(queries.loc[queries["role"] == "valid", "s1_id"]))]
+        print(f"kept {cands.loc[cands['role'] == 'train', 's1_id'].nunique():,} training S1 with external scores", flush=True)
     print(f"{len(cands):,} pairs, positives {cands['label'].mean():.3f}, "
           f"candidate recall {cands['label'].sum() / len(gt):.4f}", flush=True)
 
@@ -231,6 +241,8 @@ def main() -> None:
     t.add_argument("--feature-cache", type=Path, default=None, help="parquet to reuse features across runs")
     t.add_argument("--drop-features", default="", help="comma-separated feature name prefixes to leave out")
     t.add_argument("--word-idf", type=Path, default=None, help="train_token_idf.parquet: add distinctive-word features")
+    t.add_argument("--require-extra", action="store_true",
+                   help="train only on S1 entities whose candidates all have the --extra-scores")
     t.add_argument("--extra-scores", type=Path, nargs="*", default=None,
                    help="parquet(s) with s1_id, cand_id, p_ce added as features (must cover train and valid pairs)")
     t.add_argument("--threshold", type=float, default=None, help="fix the threshold instead of the validation best")

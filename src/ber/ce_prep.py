@@ -36,7 +36,26 @@ def main() -> None:
     m = sub.add_parser("merge")
     m.add_argument("--inputs", type=Path, nargs="+", required=True)
     m.add_argument("--out", type=Path, required=True)
+    c = sub.add_parser("from-chunks", help="scores for the pairs covered by finished chunk files")
+    c.add_argument("--pairs", type=Path, required=True)
+    c.add_argument("--chunks-dir", type=Path, required=True)
+    c.add_argument("--chunk", type=int, default=2_000_000)
+    c.add_argument("--out", type=Path, required=True)
     args = ap.parse_args()
+
+    if args.cmd == "from-chunks":
+        import numpy as np
+        pairs = pd.read_parquet(args.pairs, columns=["s1_id", "cand_id"])
+        parts = []
+        for f in sorted(args.chunks_dir.glob("chunk_*.npy")):
+            i = int(f.stem.split("_")[1])
+            p = pairs.iloc[i * args.chunk:(i + 1) * args.chunk].copy()
+            p["p_ce"] = np.load(f)
+            parts.append(p)
+        out = pd.concat(parts, ignore_index=True)
+        out.to_parquet(args.out, index=False)
+        print(f"{len(parts)} chunks -> {len(out):,} scored pairs, {out['s1_id'].nunique():,} S1 -> {args.out}")
+        return
 
     if args.cmd == "pairs":
         pairs = pd.read_parquet(args.cands, columns=["s1_id", "cand_id"]).drop_duplicates()
