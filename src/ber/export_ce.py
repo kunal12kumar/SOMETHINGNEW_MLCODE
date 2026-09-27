@@ -13,7 +13,7 @@ Record text is the raw "name | address" string, so the model sees the original n
 
 Usage:
     python -m ber.export_ce --data-dir DATA --clean-dir V4/clean --cands V4/cands_train_1m.parquet \
-        --feature-cache V4/feats_1m.parquet --model-dir DRIVE/model_v6 --out-dir DRIVE/ce
+        --model-dir DRIVE/model_v6 --out-dir DRIVE/ce
 """
 from __future__ import annotations
 
@@ -25,7 +25,8 @@ import numpy as np
 import pandas as pd
 
 from .io import read_ground_truth
-from .matcher import load_models, predict, trim_candidates
+from .features import pair_features
+from .matcher import load_models, load_records, predict, trim_candidates
 
 
 def record_texts(data_dir: Path, split: str, ids: set | None) -> pd.DataFrame:
@@ -46,7 +47,6 @@ def main() -> None:
     ap.add_argument("--data-dir", type=Path, required=True)
     ap.add_argument("--clean-dir", type=Path, required=True)
     ap.add_argument("--cands", type=Path, required=True)
-    ap.add_argument("--feature-cache", type=Path, required=True)
     ap.add_argument("--model-dir", type=Path, required=True)
     ap.add_argument("--out-dir", type=Path, required=True)
     ap.add_argument("--n-train-pairs", type=int, default=3_000_000)
@@ -54,11 +54,8 @@ def main() -> None:
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     models, cfg = load_models(args.model_dir)
-    # Same order as matcher training, so rows line up with the feature cache.
     cands = trim_candidates(pd.read_parquet(args.cands), cfg.get("addr_k", 0), cfg.get("both_k", 0))
     cands = cands.sort_values("s1_id", kind="stable").reset_index(drop=True)
-    feats = pd.read_parquet(args.feature_cache)
-    assert len(feats) == len(cands), (len(feats), len(cands))
     queries = pd.read_parquet(args.cands.with_name(args.cands.stem + "_queries.parquet"))
 
     gt = read_ground_truth(args.data_dir).rename(columns={"source1_entity_id": "s1_id", "matched_entity_id": "cand_id"})
@@ -66,10 +63,11 @@ def main() -> None:
     cands = cands.merge(gt.assign(label=1), on=["s1_id", "cand_id"], how="left")
     cands["label"] = cands["label"].fillna(0).astype(np.int8)
 
-    valid = cands["role"].to_numpy() == "valid"
-    df_valid = pd.concat([cands.loc[valid, ["s1_id", "cand_id", "cand_source"]].reset_index(drop=True),
-                          feats.loc[valid].reset_index(drop=True)], axis=1)
-    pv = cands.loc[valid, ["s1_id", "cand_id", "label"]].reset_index(drop=True)
+    # LightGBM score for validation pairs, computed here (validation is small).
+    vc = cands[cands["role"] == "valid"].reset_index(drop=True)
+    recs = load_records(args.clean_dir, "train", set(vc["s1_id"]) | set(vc["cand_id"]))
+    df_valid = pd.concat([vc[["s1_id", "cand_id", "cand_source"]], pair_features(vc, recs)], axis=1)
+    pv = vc[["s1_id", "cand_id", "label"]].copy()
     pv["p_lgbm"] = predict(models, df_valid)
     pv.to_parquet(args.out_dir / "pairs_valid.parquet", index=False)
     valid_ids = queries.loc[queries["role"] == "valid", ["s1_id"]]
