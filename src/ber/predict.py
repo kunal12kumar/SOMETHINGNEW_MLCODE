@@ -17,7 +17,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from .features import pair_features, score_features
+from .features import pair_features, score_features, word_features
+from .word_idf import load_lookup
 from .matcher import add_extra_scores, decide, load_models, load_records, predict, trim_candidates
 
 
@@ -33,7 +34,7 @@ def write_id_lists(s1_ids: pd.Series, pairs: pd.DataFrame, id_col: str, path: Pa
 
 
 def score_in_batches(cands: pd.DataFrame, clean_dir: Path, models: dict, batch_s1: int,
-                     extra: list[str] | None = None) -> pd.DataFrame:
+                     extra: list[str] | None = None, word_lookup: dict | None = None) -> pd.DataFrame:
     cands = cands.sort_values("s1_id", kind="stable").reset_index(drop=True)
     s1_codes = pd.factorize(cands["s1_id"])[0]
     bounds = np.searchsorted(s1_codes, np.arange(0, s1_codes.max() + batch_s1 + 1, batch_s1))
@@ -45,6 +46,8 @@ def score_in_batches(cands: pd.DataFrame, clean_dir: Path, models: dict, batch_s
         part = cands.iloc[lo:hi]
         recs = load_records(clean_dir, "test", set(part["s1_id"]) | set(part["cand_id"]))
         feats = pair_features(part, recs)
+        if word_lookup is not None:
+            feats = pd.concat([feats, word_features(part, recs, word_lookup)], axis=1)
         for name in extra or []:
             feats = pd.concat([feats, score_features(part, name)], axis=1)
         df = pd.concat([part[["s1_id", "cand_id", "cand_source"]], feats], axis=1)
@@ -63,6 +66,7 @@ def main() -> None:
     ap.add_argument("--threshold", type=float, default=None, help="override the tuned threshold")
     ap.add_argument("--scores-out", type=Path, default=None, help="optional parquet of all pair scores")
     ap.add_argument("--extra-scores", type=Path, nargs="*", default=None, help="same score files as in training, in order")
+    ap.add_argument("--word-idf", type=Path, default=None, help="test_token_idf.parquet, if the model uses word features")
     args = ap.parse_args()
 
     models, cfg = load_models(args.model_dir)
@@ -75,7 +79,11 @@ def main() -> None:
     cands, _ = add_extra_scores(cands, args.extra_scores)
     print(f"{len(cands):,} candidate pairs for {len(s1):,} test S1 ({len(cands) / len(s1):.1f} per S1)", flush=True)
 
-    scored = score_in_batches(cands, args.clean_dir, models, args.batch_s1, extra)
+    word_lookup = None
+    if cfg.get("word_idf"):
+        assert args.word_idf, "model uses distinctive-word features: pass --word-idf test_token_idf.parquet"
+        word_lookup = load_lookup(args.word_idf)
+    scored = score_in_batches(cands, args.clean_dir, models, args.batch_s1, extra, word_lookup)
     if args.scores_out:
         scored[["s1_id", "cand_id", "p"]].to_parquet(args.scores_out, index=False)
 

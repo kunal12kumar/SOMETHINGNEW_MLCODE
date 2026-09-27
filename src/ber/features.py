@@ -13,7 +13,7 @@ from rapidfuzz.distance import JaroWinkler
 REC_COLS = [
     "entity_id", "name_norm", "name_core", "name_alias", "name_initials", "name_legal",
     "name_translit", "addr_norm", "addr_state", "addr_city", "addr_numbers", "addr_missing",
-    "name_core_freq", "addr_key_freq",
+    "name_core_freq", "addr_key_freq", "country_norm",
 ]
 RETRIEVAL_COLS = ["addr_score", "addr_rank", "both_score", "both_rank", "n_paths"]
 
@@ -150,6 +150,48 @@ def group_features(df: pd.DataFrame, score: str) -> pd.DataFrame:
     src_best = df.groupby(["s1_id", "cand_source"])[score].transform("max")
     out["g_gap_to_best_same_src"] = (src_best - s).astype(np.float32)
     return out
+
+
+_WORD_LOOKUP: dict = {}  # set before forking workers so they share it without pickling
+
+
+def _word_diff(args):
+    """For each pair: words with no fuzzy counterpart on the other side, and how rare they are."""
+    a_names, b_names, countries = args
+    lookup = _WORD_LOOKUP
+    out = np.zeros((len(a_names), 5), np.float32)
+    for i, (a, b, c) in enumerate(zip(a_names, b_names, countries)):
+        idf = lookup.get(c, {})
+        ta, tb = a.split(), b.split()
+        default = 12.0  # unseen word: as rare as it gets
+        ua = [t for t in ta if not any(t == u or (len(t) > 3 and fuzz.ratio(t, u) >= 80) for u in tb)]
+        ub = [t for t in tb if not any(t == u or (len(t) > 3 and fuzz.ratio(t, u) >= 80) for u in ta)]
+        ia = [idf.get(t, default) for t in ua]
+        ib = [idf.get(t, default) for t in ub]
+        out[i] = (len(ua), len(ub), max(ia, default=0.0), max(ib, default=0.0), sum(ia) + sum(ib))
+    return out
+
+
+WORD_COLS = ["wd_n_a", "wd_n_b", "wd_maxidf_a", "wd_maxidf_b", "wd_sumidf"]
+
+
+def word_features(pairs: pd.DataFrame, recs: pd.DataFrame, lookup: dict, workers: int = 32,
+                  chunk: int = 200_000) -> pd.DataFrame:
+    """Distinctive-word features. recs needs name_core and country_norm, indexed by entity_id."""
+    import multiprocessing as mp
+    global _WORD_LOOKUP
+    _WORD_LOOKUP = lookup
+    a = recs.loc[pairs["s1_id"].values, "name_core"].to_numpy(dtype=object)
+    b = recs.loc[pairs["cand_id"].values, "name_core"].to_numpy(dtype=object)
+    c = recs.loc[pairs["s1_id"].values, "country_norm"].to_numpy(dtype=object)
+    jobs = [(a[i:i + chunk], b[i:i + chunk], c[i:i + chunk]) for i in range(0, len(a), chunk)]
+    if len(jobs) > 1 and workers > 1 and "fork" in mp.get_all_start_methods():
+        with mp.get_context("fork").Pool(min(workers, len(jobs))) as pool:
+            parts = pool.map(_word_diff, jobs)
+    else:
+        parts = [_word_diff(j) for j in jobs]
+    arr = np.concatenate(parts) if parts else np.zeros((0, 5), np.float32)
+    return pd.DataFrame(arr, columns=WORD_COLS, index=pairs.index)
 
 
 def score_features(df: pd.DataFrame, col: str) -> pd.DataFrame:

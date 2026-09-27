@@ -20,7 +20,8 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
-from .features import REC_COLS, group_features, one_owner, pair_features, score_features
+from .features import REC_COLS, group_features, one_owner, pair_features, score_features, word_features
+from .word_idf import load_lookup
 from .io import read_ground_truth
 from .metric import macro_f05
 
@@ -164,6 +165,11 @@ def cmd_train(args) -> None:
         feats = build_features(cands, load_records(args.clean_dir, "train", ids))
         if args.feature_cache:
             feats.to_parquet(args.feature_cache, index=False)
+    if args.word_idf:
+        recs = load_records(args.clean_dir, "train", set(cands["s1_id"]) | set(cands["cand_id"]))
+        feats = pd.concat([feats, word_features(cands, recs, load_lookup(args.word_idf))], axis=1)
+        del recs
+        print("added distinctive-word features", flush=True)
     for name in extra:
         feats = pd.concat([feats, score_features(cands, name)], axis=1)
     drop = tuple(p for p in (args.drop_features or "").split(",") if p)
@@ -195,7 +201,8 @@ def cmd_train(args) -> None:
     (args.model_dir / "config.json").write_text(json.dumps(
         {"feat_cols": feat_cols, "stage2_cols": models["stage2_cols"], **best,
          "rounds": args.rounds, "learning_rate": args.lr, "num_leaves": args.leaves,
-         "addr_k": args.addr_k, "both_k": args.both_k, "extra_scores": extra}, indent=2))
+         "addr_k": args.addr_k, "both_k": args.both_k, "extra_scores": extra,
+         "word_idf": bool(args.word_idf)}, indent=2))
     imp = pd.Series(models["stage2"].feature_importance("gain"), index=models["stage2_cols"])
     print((imp / imp.sum()).sort_values(ascending=False).head(20).round(4).to_string())
 
@@ -223,6 +230,7 @@ def main() -> None:
     t.add_argument("--leaves", type=int, default=PARAMS["num_leaves"])
     t.add_argument("--feature-cache", type=Path, default=None, help="parquet to reuse features across runs")
     t.add_argument("--drop-features", default="", help="comma-separated feature name prefixes to leave out")
+    t.add_argument("--word-idf", type=Path, default=None, help="train_token_idf.parquet: add distinctive-word features")
     t.add_argument("--extra-scores", type=Path, nargs="*", default=None,
                    help="parquet(s) with s1_id, cand_id, p_ce added as features (must cover train and valid pairs)")
     t.add_argument("--threshold", type=float, default=None, help="fix the threshold instead of the validation best")
