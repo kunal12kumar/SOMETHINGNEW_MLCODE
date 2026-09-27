@@ -1,136 +1,168 @@
 # ML Challenge 2026: Business Entity Resolution Solution Template
 
-**Team Name:** [TEAM NAME]  
-**Team Members:** [TEAM MEMBERS]  
+**Team Name:** Somethingnew  
+**Team Members:** Ritik Lodhi, Suyash Rawat, Kunal Kumar, Yuvraj Singh  
 **Submission Date:** 27-09-2026
 
 ---
 
 ## 1. Executive Summary
-We normalise names and addresses (including romanising six Indian scripts), generate candidates with state-blocked TF-IDF search over Source 2 and Source 3, and score every candidate pair with a two-stage LightGBM model built on similarity features. Final matches come from a one-owner rule (each Source 2/3 record belongs to at most one Source 1 entity) and a threshold tuned directly for macro F0.5. On 30,000 held-out validation entities the pipeline scores **macro F0.5 = [VALID_F05]**, with candidate recall of 98.2%. It uses only the provided files, no external data or APIs, and only MIT-licensed libraries and models.
+We normalise names and addresses (including romanising eight Indian scripts), generate candidates with **state-blocked TF-IDF search** over Source 2 and Source 3, and score each pair with a **two-stage LightGBM** on string-similarity and within-entity competition features. Final matches use a **one-owner rule** (each S2/S3 record goes to at most one S1 entity, which holds for all 7.6M labelled records) and a threshold chosen for precision under the test set's higher distractor density. The submitted candidate set has **25.7 candidates per S1** with 97.5% validation recall. The best public leaderboard score is **0.9575** (validation macro F0.5 0.967). Only the provided files are used, together with permissively licensed libraries and models.
 
 ---
 
 ## 2. Methodology
 
 ### 2.1 Problem Analysis
-Findings from EDA on the training data:
-
-- **Scale:** 2.21M Source 1 entities in train, about 5M records in each of Source 2 and 3; 1.73M Source 1 entities in test. All-pairs comparison is impossible, so candidate generation is essential.
-- **Match structure:** 5.6% of Source 1 entities are singletons, the mean is 3.5 matches (range 0–11), and **no Source 2/3 record matches more than one Source 1 entity** (all 7.64M labelled IDs are unique). This gives the one-owner rule.
-- **Name noise:** legal-form variants (Pvt/Private, Ltd/Limited, LLC/L.L.C.), digit-for-letter typos (H0rizon, 5umit), bracketed tags ([LP], (Center)), leading junk ("-- "), "dba / a/k/a / t/a" aliases, web domains (wilfordhancock.com), and **invented trade names** that share no words with the real name ("Ember Properties Inc" ↔ "Nylajax"). These can only be matched by address.
-- **Scripts:** 23% of India Source 2 names are in Devanagari, Gujarati, Bengali, Odia, Tamil, Telugu, Kannada or Malayalam script; state names also appear in native script inside addresses.
-- **Address noise:** abbreviations (St, Rd, Ave, R, Av), number labels (H.No, P.NO., N°, #), leading zeros, component reordering, duplicated tokens ("CITY CITY"), 3–6% empty addresses in Source 2/3.
-- **State labels:** codes vs names (TX vs Texas, WB vs West Bengal). 99.4% of labelled pairs agree on state; the main exception is Telangana ↔ Andhra Pradesh.
-- **France (test only):** Source 1 uses regions while 65–68% of Source 2/3 records use departments, so no state was detected for them before our city-based fill.
+- **Scale:** 2.21M train S1 and ~10.3M S2+S3 records; 1.73M test S1 and ~10.0M S2+S3. All-pairs comparison is impossible.
+- **Match structure:** 5.6% singletons, 3.46 matches per S1 on average (0–11). **No S2/S3 record matches two S1 entities.**
+- **Test differs from train:** 5.8 S2/S3 records per test S1 vs 4.7 in train, with similar true matches per S1. So test has roughly **2× more non-matching look-alikes ("siblings")**: the same or similar name at a nearby house number on the same street, or a different business at the same address. France (15% of test) has no training labels.
+- **Name noise:**
+  - Legal-form variants (Pvt/Private, LLC/L.L.C., SARL/SAS/EURL/SASU).
+  - Digit-for-letter typos (H0rizon, 5umit); bracket tags ([LP], (Center)); leading junk ("-- "); honorifics (Mr, Smt, M/s).
+  - Duplicated words; phone numbers; web domains; initials only ("RS" = "Roubaix Sport SAS").
+  - **Invented trade names** with no word overlap ("Nylajax" = "Ember Properties Inc").
+  - Aliases ("X dba / d/b/a / t/a / trading as / aka / fka / formerly (known as) / doing business as Y", 7–22k names each).
+  - 23% of India S2 names in native script.
+- **Address noise:**
+  - Abbreviations (St, Rd, Ave, R = Rue, Crs = Cours); number labels (H.No, Plot No, N°, #).
+  - Leading zeros; reformatted numbers (4-02 = 402, 823B); extra numbers; component reordering.
+  - State as code or name, or in native script; Telangana ↔ Andhra Pradesh swaps (19%).
+  - French regions (S1) vs departments (S2/S3); 3–6% empty addresses.
 
 ### 2.2 Solution Strategy
-**Approach Type:** Blocking + Classifier (with a one-owner assignment step)  
-**Core Innovation:** State-blocked TF-IDF retrieval that combines name and address in one vector, a data-driven state repair (city → state map and learned "neighbour" states), and a two-stage matcher whose second stage sees how a candidate compares with the other candidates of the same entity. The threshold is tuned on the official macro F0.5 including singletons.
+**Approach Type:** Blocking + two-stage classifier + one-owner assignment (optional cross-encoder rescoring)  
+**Core Innovation:**
+- State-blocked retrieval that combines name and address in one TF-IDF vector.
+- Data-driven state repair: a city → state map learned from S1, and "neighbour" states learned from labels.
+- A second LightGBM stage that sees how each candidate compares with the other candidates of the same entity.
+- Decisions (threshold, feature set, shortlist size) checked against **test-set behaviour**, not only validation. Validation gains did not always carry over, so we compared test outputs before each upload.
 
-Generalisation to the unseen country: every feature is a similarity or an agree/conflict flag, never a country one-hot or a raw word. `country` is used only as an open-set grouping key, and all learned maps (city → state, neighbour states) come from the provided files of the same split.
+Generalisation to the unseen country: every feature is a similarity or an agree/conflict flag, with no country one-hot and no raw words. `country` is only an open-set grouping key, and all learned maps come from the provided files of the same split.
 
 ---
 
 ## 3. Candidate Generation (Blocking)
+- **Normalisation first** (`normalize.py`):
+  - Raw text is kept, and we add normalised name, core name (legal forms and honorifics removed), alias, initials, address, state, city and the set of address numbers.
+  - Indian scripts are romanised with `indic-transliteration` (MIT), plus silent-vowel and nasal rules.
+  - "St"/"Street"/"Saint" share one token.
+  - Audit on 73,531 labelled pairs, mean similarity: name 78.2 → 87.5 (India S2: 65.8 → 86.0); address 85.2 → 92.9.
+- **Search paths**, per country label and per source (S2 and S3 kept separately), using `sparse_dot_topn`:
+  - `addr`: word TF-IDF on the normalised address.
+  - `both`: character 3-gram TF-IDF on the name (weight 0.6) concatenated with word TF-IDF on the address (weight 0.4).
+  - A name-only path was dropped: 17× slower, with little extra recall.
+- **Blocking key = state:** a query searches its own state, its learned neighbour states and records with no state. This cut search cost about 20× and *raised* recall, because out-of-state look-alikes no longer fill the top-K.
+- **State repair:** city → state map from S1 (≥3 occurrences, ≥90% purity). French S2/S3 records with no state: 68% → 5.9%.
+- **Final shortlist:** `addr` top-5 + `both` top-10 per source → **44,496,050 test pairs (25.7 per S1)**. The larger setting (top-10 + top-20, 54.4 per S1) scored lower on the leaderboard (0.957 vs 0.958).
+- **How true matches were kept:** recall@K measured on 30,000 held-out S1 after every change.
 
-- **Normalisation first:** see Appendix A (`normalize.py`). Raw text is kept alongside a normalised form and a "core" name (legal forms and honorifics removed), so distinct businesses are not collapsed.
-- **Search paths** (per country label, per source, top-K kept separately for S2 and S3):
-  - `addr`: word TF-IDF on the normalised address, K = 10. It finds matches whose names differ completely.
-  - `both`: character 3-gram TF-IDF on the name (weight 0.6) concatenated with word TF-IDF on the address (weight 0.4), K = 20. A common name ranks high only when the address also agrees.
-  - A name-only path was tested and dropped: 17× slower, with little extra recall.
-- **Blocking key: state.** A query searches pool records in its own state, its learned neighbour states, and records with no detected state. This cut search time about 20× (0.8 ms/query instead of 15 ms) and *raised* recall because out-of-state look-alikes no longer fill the top-K.
-- **State repair:**
-  - A city → state map is learned from Source 1 of the same split (≥3 occurrences, ≥90% purity) and fills missing states in Source 2/3. For France this lowered no-state records from 68% to 7%.
-  - Neighbour states come from training labels (state pairs with ≥0.5% of a state's matches), e.g. Telangana ↔ Andhra Pradesh.
-- **Candidate pairs generated:** 94,296,471 for the test set (54.4 per Source 1 entity), from about 10M × 1.7M possible pairs.
-- **How true matches were kept:** recall@K was measured on held-out validation entities after every change, with a target of ≥97%. Final candidate recall on validation: **98.2%**; for comparison, name + address union without blocking was 97.2%.
-
-| Setting (validation, 30k S1) | Union recall | Candidates / S1 |
+| Setting (validation, 30k S1) | Recall | Candidates / S1 |
 |---|---|---|
-| name + addr TF-IDF, K=20 | 96.9% | 82 |
+| name + addr TF-IDF, K=20, no blocking | 96.9% | 82 |
 | + combined name+address path | 97.2% | 45 |
-| + state blocking (name path dropped) | 97.4% | 38 |
-| + city → state fill + neighbour states | **98.2%** | 55 |
+| + state blocking | 97.4% | 38 |
+| + city→state fill + neighbour states (addr 10, both 20) | 98.2% | 55 |
+| **submitted: addr 5, both 10** | **97.5%** | **25.7** |
 
 ---
 
 ## 4. Matching Model
 
-**Features used** (about 40, all computed with RapidFuzz in C++):
-- **Name features:** Levenshtein ratio, token-sort, token-set, partial ratio and Jaro-Winkler on core names; ratio and token-set on full normalised names; no-space ratio (for domains); best score against "dba" aliases; exact core match; initials vs glued name ("M R & X Sun" ↔ mr.com); legal-form agreement; name lengths; transliteration flag; how common each core name is in the pool (log frequency).
-- **Address features:** token-set, token-sort and partial token-set ratios; house-number set overlap and near-equality (dropped/extra digit); largest-number equality and edit ratio; city equality and ratio; state agree/conflict/missing; missing-address flags.
+**Features used** (RapidFuzz, vectorised in C++):
+- **Name features:**
+  - Levenshtein ratio, token-sort, token-set, partial ratio and Jaro-Winkler on core names.
+  - Ratio and token-set on normalised names; no-space ratio (domains).
+  - Best score against aliases; exact core match; initials vs glued name; legal-form agreement.
+  - Name lengths; transliteration flag; log frequency of each core name in the pool.
+- **Address features:**
+  - Token-set, token-sort and partial token-set ratios.
+  - House numbers: set overlap, near-equality (dropped or extra digit), exact match, largest-number equality and edit ratio.
+  - City equality and ratio; state agree/conflict/missing; missing-address flags.
 - **Other:**
-  - Retrieval scores and ranks from both paths, and the number of paths that found the pair; candidate source (S2/S3).
-  - Stage-2 group features computed from the stage-1 score within each Source 1 entity: rank, gap to the best candidate, gap to the best candidate from the same source, number of candidates, and number scoring above 0.5.
+  - Retrieval scores, ranks and number of paths; candidate source.
+  - **Stage-2 within-entity features** from the stage-1 probability: rank, gap to the best, gap to the best of the same source, number of candidates, number scoring above 0.5.
 
-**Model type:** two-stage LightGBM (MIT licence):
-- **Stage 1** is trained with 3-fold out-of-fold predictions, grouped by Source 1 entity.
-- **Stage 2** takes the pair features, the stage-1 score and the group features.
-- **Settings:** 800 rounds, 63 leaves, learning rate 0.05, bagging and feature subsampling 0.8, minimum 200 rows per leaf.
-- **Training data:** 150,000 training-fold Source 1 entities, 8.3M candidate pairs (6.2% positive). Negatives are the realistic hard negatives produced by our own candidate generation.
+**Model type:** two-stage LightGBM (MIT).
+- Stage 1 uses 3-fold out-of-fold predictions grouped by S1. Stage 2 takes the pair features, the stage-1 probability and the group features.
+- Settings: 800 rounds, 63 leaves, learning rate 0.05, bagging 0.8, minimum 200 rows per leaf.
+- Trained on 1,000,000 training-fold S1 entities (26.9M shortlist pairs, 12.9% positive). The negatives are realistic hard negatives from our own retrieval.
 
 **Threshold selection method:**
-1. Apply the one-owner rule: each Source 2/3 record is kept only for its highest-scoring Source 1 entity.
-2. Grid-search the threshold from 0.20 to 0.95 on 30,000 validation entities, maximising the official macro F0.5 with singletons included.
-3. The curve is flat between 0.60 and 0.75, so we chose [THRESHOLD] from that stable region.
+- One-owner rule first: each S2/S3 record is kept only for its highest-scoring S1.
+- Then a fixed threshold. On validation, macro F0.5 is flat from 0.60 to 0.75 (best 0.65). We chose **0.75** because test has about 2× more distractors. A simulation that doubles validation distractors moves the optimum from 0.70 to 0.75.
 
-**Validation design:** entity-grouped split (10% of Source 1 by a hash of the ID), so an entity and all its matches are entirely in train or entirely in validation.
+**Validation design:** entity-grouped split (10% of S1 by a hash of the ID). An entity and all its matches fall entirely in train or entirely in validation.
+
+**[Optional stage, if it improves results] Cross-encoder:**
+- Model: `paraphrase-multilingual-MiniLM-L12-v2` (Apache-2.0, 118M parameters), fine-tuned as a pair classifier on 3M shortlist pairs, shown in both orders.
+- Input is the raw `name | address` of both records.
+- It is combined with LightGBM by a small stacking model, chosen on normal validation and on a "stress" validation where hard negatives are repeated to match the test distractor density. Results: [CE RESULTS].
 
 ---
 
 ## 5. Results & Error Analysis
 
-- **F_0.5 Score (macro, validation):** [VALID_F05] (US [VALID_US], India [VALID_IN]; singletons scored [VALID_SINGLE])
-- **Pair precision / recall:** [PAIR_P] / [PAIR_R]
+| Version | Main change | Validation macro F0.5 | Public LB |
+|---|---|---|---|
+| v2 | base features + near-equal numbers, name frequency | 0.9668 | 0.957 |
+| v4 | + "support" features, address frequency, normalisation fixes, 500k training entities | 0.9711 | 0.955 |
+| **v6** | v2 features + normalisation fixes + 1M training entities + 25.7/S1 shortlist + threshold 0.75 | 0.9669 | **0.958** |
+
+- **F_0.5 Score (macro, validation):** 0.967 (US 0.974, India 0.956; singletons 0.964).
+- **Pair precision / recall (validation):** 98.9% / 93.5%.
+- **Where the validation score is lost** (oracle analysis):
+  - removing all false positives would add 0.010
+  - recovering true matches that were retrieved but scored too low would add 0.018
+  - retrieving the missing 1.8% would add 0.006
 - **Common false positives (wrong merges):**
-  - Near-identical businesses at the same address that differ only in legal form or one word ("Foundation Tech Private Limited" vs "Foundation Tech Limited").
-  - Different businesses sharing a building ("Char Games Inc." vs "Games Patterson Inc.", same street number).
-  - Adjacent house numbers on the same street.
+  - **Sibling businesses:** the same or similar name at a nearby house number ("Coastal III LLC" at 519 vs 4510; "MZB Sportive SNC" at no. 10 vs 7).
+  - Different businesses sharing an address.
+  - These are much more frequent on test than in training.
 - **Common false negatives (missed matches):**
-  - Candidates with an empty address, where only the name is available.
-  - House numbers with a dropped or extra digit (4120 vs 412), which we addressed with near-equal number features.
-  - Invented trade names whose address is partial.
-  - Transliterated names with very short addresses (1.8% of true pairs never reach the candidate set).
+  - Native-script names with short addresses, where retrieval misses them.
+  - Invented trade names and initials at the same address.
+  - Candidates with an empty address.
+- **Lesson learned:**
+  - "Support" features (similarity to the entity's strongest other candidate) improved validation by +0.004 but **lowered** the leaderboard.
+  - On test they pulled in sibling look-alikes and pushed out initials and trade-name matches, as a pair-by-pair comparison of test outputs showed.
+  - We removed them and checked every later change against test-output comparisons.
 
 ---
 
 ## 6. Conclusion
-The problem is mostly about finding every true match: only 5.6% of Source 1 entities have no match, so recall at the candidate stage was the first bottleneck. Careful normalisation plus state-blocked name+address retrieval gave 98.2% candidate recall at about 55 candidates per entity. A similarity-feature LightGBM with within-entity competition features, the one-owner rule and an F0.5-tuned threshold then keeps pair precision near 99%. The main lesson: blocking on a repaired, data-driven key (state) improved both speed and recall. With more time, a fine-tuned multilingual bi-encoder (multilingual-e5, MIT) as an extra retrieval path would target the remaining transliterated-name misses.
+Careful normalisation, state-blocked name+address retrieval and a LightGBM pair model with within-entity competition features give a compact, fast and rule-compliant pipeline. It uses 25.7 candidates per entity and about 1 hour end-to-end on 44 CPU cores, and reaches 0.958 on the public leaderboard. The main remaining error is separating a business from its "siblings" (same name, nearby address), which appear about twice as often in the test data. Our key lesson: in entity resolution, validation must mimic the test distractor density, or feature changes that look good in validation can hurt on test.
 
 ---
 
 ## Appendix
 
 ### A. Code Artefacts
-`code/business_entity_resolution/`, with Python 3.13 and dependencies pinned in `requirements.txt`:
+`code/business_entity_resolution/` (Python 3.12/3.13, dependencies pinned in `requirements.txt`). The full command order is in `README.md`:
 
-| File | Purpose |
-|---|---|
-| `src/ber/lexicon.py` | Hand-written formatting conventions: legal forms, address abbreviations, postal state codes |
-| `src/ber/normalize.py` | Name/address normalisation, Indic transliteration (`indic-transliteration`, MIT) |
-| `src/ber/preprocess.py` | Streams the six TSVs to normalised parquet |
-| `src/ber/fill_state.py` | City → state map learned from Source 1; fills missing states |
-| `src/ber/splits.py` | Entity-grouped validation split |
-| `src/ber/state_neighbors.py` | States often swapped between sources, from training labels |
-| `src/ber/name_freq.py` | Core-name frequency per split and country |
-| `src/ber/candidates.py`, `run_candidates.py` | State-blocked TF-IDF candidate generation |
-| `src/ber/features.py` | Pair and group features |
-| `src/ber/matcher.py` | Two-stage LightGBM training, threshold tuning |
-| `src/ber/predict.py` | Test scoring, writes `matching_results.tsv` and `candidate_pairs.tsv` |
-| `src/ber/metric.py` | Official macro F0.5 |
-| `src/ber/eval_candidates.py`, `analyze_errors.py`, `audit_normalize.py` | Recall, error and normalisation checks |
-| `models/` | Trained LightGBM models and tuned threshold |
-| `notebooks/colab_pipeline.ipynb` | Same pipeline on Google Colab |
+preprocess → fill_state → splits → state_neighbors → name_freq → run_candidates (train) → matcher train → run_candidates (test) → predict
 
-Entry points and the exact command order are in `README.md`: preprocess → fill_state → splits → state_neighbors → name_freq → run_candidates (train) → matcher train → run_candidates (test) → predict.
+Key modules:
+- `normalize.py`, `lexicon.py`: normalisation.
+- `candidates.py`: retrieval.
+- `features.py`: pair and group features.
+- `matcher.py`: LightGBM training and threshold.
+- `predict.py`: writes both TSVs.
+- `metric.py`: official macro F0.5.
+- `cross_encoder.py`, `stack.py`: optional cross-encoder stage.
+- `models/v6/` holds the trained model.
 
 **Compliance:**
-- No external data, APIs, geocoding or lookups. All lists are written in our own code, and all learned maps come from the provided files.
-- Models: LightGBM (MIT), with no pretrained neural model in the final pipeline.
-- Libraries: pandas, scikit-learn, RapidFuzz, sparse_dot_topn, indic-transliteration and Unidecode are all under permissive licences.
+- No external data, APIs, geocoding or registries. All rule lists are hand-written conventions, and all learned maps come from the provided files.
+- Licences:
+  - LightGBM (MIT)
+  - indic-transliteration (MIT)
+  - RapidFuzz (MIT)
+  - sparse_dot_topn (Apache-2.0)
+  - scikit-learn (BSD)
+  - optional MiniLM cross-encoder (Apache-2.0, 118M parameters)
 
 ### B. Additional Results
-- Normalisation audit on 73,531 labelled pairs, mean similarity raw → normalised: name 78.2 → 87.5 (India S2: 65.8 → 86.0 from transliteration), address 85.2 → 92.9.
-- Threshold curve (validation macro F0.5): 0.50 → 0.955, 0.60 → 0.958, 0.70 → 0.959, 0.80 → 0.957, 0.90 → 0.952.
-- Runtime on 8 cores: preprocessing ~10 min; test candidate generation 62 min; training ~10 min; test scoring ~30–45 min.
+- Threshold curve (v6, validation): 0.60 → 0.9669, 0.65 → 0.9676, 0.70 → 0.9671, 0.75 → 0.9669, 0.80 → 0.9657, 0.90 → 0.9598.
+- Doubling validation distractors: 0.9667 → 0.9629, with the best threshold moving 0.70 → 0.75.
+- Runtime on 44 cores: preprocessing ~4 min; test candidates ~20 min; training ~25 min; test scoring ~15 min.
