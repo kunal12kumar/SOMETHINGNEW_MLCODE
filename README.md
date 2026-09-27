@@ -1,6 +1,6 @@
 # Business Entity Resolution
 
-**Submitted pipeline (v8-lite):** normalise → state-blocked TF-IDF candidate search (25.7 per S1) →
+**Submitted: v9 = the matches v8-lite and v7 agree on (step 17).** v8-lite pipeline: normalise → state-blocked TF-IDF candidate search (25.7 per S1) →
 a fine-tuned multilingual cross-encoder scores every candidate pair from the raw text →
 a two-stage LightGBM uses the cross-encoder score (plus its rank and gap within the entity),
 ~40 similarity features and distinctive-word features → one-owner rule → threshold 0.75
@@ -110,6 +110,15 @@ python -m ber.matcher train --data-dir $DATA --clean-dir $WORK/clean --cands $WO
 python -m ber.predict --clean-dir $WORK/clean --cands $WORK/cands_test.parquet --model-dir models/v8lite     --extra-scores $WORK/ce/test_scores_blend.parquet --word-idf $WORK/clean/test_token_idf.parquet     --out-dir output --batch-s1 150000
 ```
 
+## Step 17: the submitted v9
+
+Keep a v8-lite match only if v7 (step 12) made it too; an entity v8-lite matched is never
+left empty. Rows follow v8-lite; `candidate_pairs.tsv` is v8-lite's (the same shortlist as v7).
+
+```bash
+python -m ber.combine --a output_v7/matching_results.tsv --b output_v8lite/matching_results.tsv --out-dir output
+```
+
 ## Experiments that were not submitted
 
 - Full v8: the 55/S1 shortlist (recall 98.2%) with cross-encoder features on all pairs; it needed
@@ -140,7 +149,8 @@ python -m ber.compare_outputs --data-dir $DATA --old A/matching_results.tsv --ne
 | `src/ber/features.py` | Pair and within-entity group features |
 | `src/ber/matcher.py` | Two-stage LightGBM, threshold tuning, shortlist trim |
 | `src/ber/predict.py`, `rethreshold.py` | Test scoring and submission writing |
-| `src/ber/export_ce.py`, `cross_encoder.py`, `stack.py` | Optional cross-encoder stage and score stacking |
+| `src/ber/export_ce.py`, `cross_encoder.py`, `stack.py` | Cross-encoder stage and score stacking |
+| `src/ber/combine.py` | Agreement of two submissions (v9) |
 | `src/ber/metric.py` | Official macro F0.5 |
 | `src/ber/eval_candidates.py`, `analyze_errors.py`, `oracle.py`, `compare_outputs.py`, `inspect_test.py`, `audit_normalize.py`, `tune_blocking.py` | Analysis tools |
 | `models/v8lite/` | Final LightGBM (with cross-encoder and word features) and chosen threshold |

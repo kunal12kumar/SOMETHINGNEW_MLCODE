@@ -11,10 +11,13 @@ We normalise names and addresses (including romanising eight Indian scripts) and
 - a **two-stage LightGBM** on string-similarity and within-entity competition features
 - a fine-tuned **multilingual cross-encoder** (MiniLM, Apache-2.0, 118M parameters) that reads both raw records together
 
-In the submitted version (**v8-lite**), the cross-encoder score, with its rank and gap within the entity, is fed into the LightGBM as a feature, together with **distinctive-word features** (rare name words with no counterpart on the other side). Final matches apply a **one-owner rule** (each S2/S3 record belongs to at most one S1 entity, which holds for all 7.6M labelled records) and a threshold chosen on both normal validation and a **"stress" validation** that mimics the test set's higher density of look-alike businesses.
+In **v8-lite**, the cross-encoder score, with its rank and gap within the entity, is fed into the LightGBM as a feature, together with **distinctive-word features** (rare name words with no counterpart on the other side). Final matches apply a **one-owner rule** (each S2/S3 record belongs to at most one S1 entity, which holds for all 7.6M labelled records) and a threshold chosen on both normal validation and a **"stress" validation** that mimics the test set's higher density of look-alike businesses.
+
+The submitted version (**v9**) keeps only the matches that v8-lite and v7 agree on. It never leaves an entity without a match that v8-lite gave it.
 
 Results on 30,000 held-out entities, macro F0.5 (stress in brackets):
-- **v8-lite: 0.9791 (0.9774), public leaderboard 0.96987**
+- **v9, agreement of v8-lite and v7: public leaderboard [V9 LB]**
+- v8-lite: 0.9791 (0.9774), public leaderboard 0.96987
 - v7, the two models combined by a stacker: 0.9776 (0.9759), public leaderboard 0.96986
 - LightGBM alone: 0.9669 (0.9634), public leaderboard 0.9575
 
@@ -128,6 +131,21 @@ Generalisation to the unseen country: all LightGBM features are similarities or 
 - **Stress validation** repeats every hard negative (a non-match that either model scores above 0.3), so look-alikes are twice as common, as observed on test.
 - Chosen: **v8-lite, threshold 0.75** (v7: stacker, threshold 0.80).
 
+**Final decision, v9 (submitted):**
+- Keep a v8-lite match only if v7 also made it.
+- Exception: if that would leave the entity with no match, keep v8-lite's matches.
+
+The reason is F0.5:
+- For an entity with several matches, adding a pair helps only if it is right more than ~75% of the time.
+- A pair that one strong model accepts and the other rejects is a borderline case, and those are right less often, especially on test with its denser look-alikes.
+- For an entity whose only match would be removed, the entity scores 0 or 1, so a match right more than half of the time is worth keeping.
+
+On test:
+- Both models agree on 5,634,031 matches.
+- 66,285 v8-lite-only matches are dropped.
+- 3,482 entities keep v8-lite's matches to avoid an empty row.
+- 5,637,800 matches remain.
+
 **Validation design:** entity-grouped split (10% of S1 by a hash of the ID). Validation entities are never used to train LightGBM or the cross-encoder.
 
 ---
@@ -142,7 +160,7 @@ Validation on 30,000 held-out S1 entities (official macro F0.5, singletons inclu
 | Cross-encoder alone (best threshold) | 0.9705 | 0.9680 |
 | Fixed blend 0.7·CE + 0.3·LightGBM | 0.9766 | 0.9746 |
 | Stacker, threshold 0.80 (v7) | 0.9776 | 0.9759 |
-| **LightGBM + CE features + word features, threshold 0.75 (v8-lite, submitted)** | **0.9791** | **0.9774** |
+| LightGBM + CE features + word features, threshold 0.75 (v8-lite) | 0.9791 | 0.9774 |
 
 History of leaderboard submissions:
 
@@ -152,7 +170,8 @@ History of leaderboard submissions:
 | v4 | + "support" features, address frequency, 500k training entities | 0.9711 | 0.955 |
 | v6 | v2 features + normalisation fixes + 1M training entities + 25.7/S1 shortlist | 0.9669 | 0.9575 |
 | v7 | v6 + cross-encoder + stacker | 0.9776 | 0.96986 |
-| **v8-lite (final)** | **cross-encoder features + distinctive-word features inside LightGBM** | **0.9791** | **0.96987** |
+| v8-lite | cross-encoder features + distinctive-word features inside LightGBM | 0.9791 | 0.96987 |
+| **v9 (final)** | **matches both v8-lite and v7 agree on (never emptying an entity)** | n/a | **[V9 LB]** |
 
 - **Common false positives (wrong merges):**
   - Siblings with the same name at a nearby house number.
@@ -186,7 +205,8 @@ Careful normalisation and state-blocked name+address retrieval give a compact ca
    - run_candidates (train, 300k, offset 1M) → word_idf
    - cross-encoder scores for the first 3 chunks of training pairs → ce_prep from-chunks / merge
    - matcher train (`--extra-scores --require-extra --word-idf`, `models/v8lite`)
-   - predict → `output/matching_results.tsv`, `output/candidate_pairs.tsv`
+   - predict
+6. v9: combine (v7 AND v8-lite) → `output/matching_results.tsv`, `output/candidate_pairs.tsv`
 
 Key modules:
 - `normalize.py`, `lexicon.py`: normalisation.
