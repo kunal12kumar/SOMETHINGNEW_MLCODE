@@ -54,12 +54,12 @@ def main() -> None:
         with zipfile.ZipFile(args.out, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as z:
             for p in sorted(root.rglob("*")):
                 if p.is_file():
-                    z.write(p, p.relative_to(root.parent))
+                    z.write(p, p.relative_to(root))  # output/, code/, Documentation at the zip root
     with zipfile.ZipFile(args.out) as z:
         names = z.namelist()
     print(f"wrote {args.out} ({args.out.stat().st_size / 1e6:.0f} MB, {len(names)} files)")
     for n in names:
-        if n.count("/") <= 3:
+        if n.count("/") <= 2:
             print("  " + n)
 
 
