@@ -34,6 +34,8 @@ def main() -> None:
     ap.add_argument("--a", type=Path, required=True)
     ap.add_argument("--b", type=Path, required=True)
     ap.add_argument("--out-dir", type=Path, required=True)
+    ap.add_argument("--fill", type=Path, nargs="*", default=[],
+                    help="for entities left with no match: add --a's matches that all these files also made")
     args = ap.parse_args()
 
     a = read_matches(args.a)
@@ -44,21 +46,37 @@ def main() -> None:
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     kept = dropped = rows_kept = 0
+    out = {}
+    for s1, ids in b.items():
+        both = set(a[s1])
+        keep = [r for r in ids if r in both]
+        if ids and not keep:
+            keep = ids
+            rows_kept += 1
+        kept += len(keep); dropped += len(ids) - len(keep)
+        out[s1] = keep
+    filled = 0
+    if args.fill:
+        # an empty entity scores 0 or 1, so a match that 2+ models agree on is worth adding
+        fills = [read_matches(p) for p in args.fill]
+        owned = {r for ids in out.values() for r in ids}
+        for s1, ids in out.items():
+            if ids:
+                continue
+            add = [r for r in a[s1] if r not in owned and all(r in fl[s1] for fl in fills)]
+            owned.update(add)
+            out[s1] = add
+            filled += bool(add)
     with open(args.out_dir / "matching_results.tsv", "w", encoding="utf-8", newline="\n") as f:
         f.write(header)
-        for s1, ids in b.items():
-            both = set(a[s1])
-            keep = [r for r in ids if r in both]
-            if ids and not keep:
-                keep = ids
-                rows_kept += 1
-            kept += len(keep); dropped += len(ids) - len(keep)
-            f.write(f"{s1}\t{','.join(keep)}\n")
+        for s1, ids in out.items():
+            f.write(f"{s1}\t{','.join(ids)}\n")
     cand = args.b.parent / "candidate_pairs.tsv"
     if cand.exists():
         shutil.copy2(cand, args.out_dir / "candidate_pairs.tsv")
     print(f"{kept:,} matches kept, {dropped:,} dropped (only in --b); "
-          f"{rows_kept:,} entities kept as in --b to avoid an empty row -> {args.out_dir}")
+          f"{rows_kept:,} entities kept as in --b to avoid an empty row; {filled:,} empty entities filled "
+          f"-> {args.out_dir}")
 
 
 if __name__ == "__main__":
