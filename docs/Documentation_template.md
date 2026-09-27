@@ -14,8 +14,8 @@ We normalise names and addresses (including romanising eight Indian scripts) and
 In the submitted version (**v8-lite**), the cross-encoder score, with its rank and gap within the entity, is fed into the LightGBM as a feature, together with **distinctive-word features** (rare name words with no counterpart on the other side). Final matches apply a **one-owner rule** (each S2/S3 record belongs to at most one S1 entity, which holds for all 7.6M labelled records) and a threshold chosen on both normal validation and a **"stress" validation** that mimics the test set's higher density of look-alike businesses.
 
 Results on 30,000 held-out entities, macro F0.5 (stress in brackets):
-- **v8-lite: 0.9791 (0.9774)**
-- v7, the two models combined by a stacker: 0.9776 (0.9759), public leaderboard **0.970**
+- **v8-lite: 0.9791 (0.9774), public leaderboard 0.96987**
+- v7, the two models combined by a stacker: 0.9776 (0.9759), public leaderboard 0.96986
 - LightGBM alone: 0.9669 (0.9634), public leaderboard 0.9575
 
 Only the provided files are used, with permissively licensed libraries and models.
@@ -151,8 +151,8 @@ History of leaderboard submissions:
 | v2 | base LightGBM features | 0.9668 | 0.957 |
 | v4 | + "support" features, address frequency, 500k training entities | 0.9711 | 0.955 |
 | v6 | v2 features + normalisation fixes + 1M training entities + 25.7/S1 shortlist | 0.9669 | 0.9575 |
-| v7 | v6 + cross-encoder + stacker | 0.9776 | 0.970 |
-| **v8-lite (final)** | **cross-encoder features + distinctive-word features inside LightGBM** | **0.9791** | final upload |
+| v7 | v6 + cross-encoder + stacker | 0.9776 | 0.96986 |
+| **v8-lite (final)** | **cross-encoder features + distinctive-word features inside LightGBM** | **0.9791** | **0.96987** |
 
 - **Common false positives (wrong merges):**
   - Siblings with the same name at a nearby house number.
@@ -165,6 +165,7 @@ History of leaderboard submissions:
 - **Lessons learned:**
   - Features that compare a candidate with the entity's other candidates ("support") improved validation but hurt the leaderboard. On test they pulled in siblings.
   - Selecting models on a stress validation, and reading test-output differences, protected us from repeating that mistake.
+  - v8-lite's +0.0015 on validation gave only +0.00002 on the leaderboard: the remaining test errors are mostly look-alike businesses that our validation split has fewer of.
 
 ---
 
