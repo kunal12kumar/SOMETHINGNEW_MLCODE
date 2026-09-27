@@ -16,7 +16,7 @@ In **v8-lite**, the cross-encoder score, with its rank and gap within the entity
 The submitted version (**v9**) keeps only the matches that v8-lite and v7 agree on. It never leaves an entity without a match that v8-lite gave it.
 
 Results on 30,000 held-out entities, macro F0.5 (stress in brackets):
-- **v9, agreement of v8-lite and v7: public leaderboard [V9 LB]**
+- **v9, agreement of v8-lite and v7: public leaderboard 0.97071**
 - v8-lite: 0.9791 (0.9774), public leaderboard 0.96987
 - v7, the two models combined by a stacker: 0.9776 (0.9759), public leaderboard 0.96986
 - LightGBM alone: 0.9669 (0.9634), public leaderboard 0.9575
@@ -171,7 +171,7 @@ History of leaderboard submissions:
 | v6 | v2 features + normalisation fixes + 1M training entities + 25.7/S1 shortlist | 0.9669 | 0.9575 |
 | v7 | v6 + cross-encoder + stacker | 0.9776 | 0.96986 |
 | v8-lite | cross-encoder features + distinctive-word features inside LightGBM | 0.9791 | 0.96987 |
-| **v9 (final)** | **matches both v8-lite and v7 agree on (never emptying an entity)** | n/a | **[V9 LB]** |
+| **v9 (final)** | **matches both v8-lite and v7 agree on (never emptying an entity)** | n/a | **0.97071** |
 
 - **Common false positives (wrong merges):**
   - Siblings with the same name at a nearby house number.
