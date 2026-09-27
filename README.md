@@ -1,17 +1,20 @@
 # Business Entity Resolution
 
-**Submitted pipeline (v7):** normalise → state-blocked TF-IDF candidate search (25.7 per S1) →
-two scorers on every candidate pair — a two-stage LightGBM on similarity features and a
-fine-tuned multilingual cross-encoder on the raw text — → a small stacker combines them →
-one-owner rule → threshold 0.80 (chosen on normal + stress validation).
-Validation macro F0.5 0.9776 (stress 0.9759).
+**Submitted pipeline (v8-lite):** normalise → state-blocked TF-IDF candidate search (25.7 per S1) →
+a fine-tuned multilingual cross-encoder scores every candidate pair from the raw text →
+a two-stage LightGBM uses the cross-encoder score (plus its rank and gap within the entity),
+~40 similarity features and distinctive-word features → one-owner rule → threshold 0.75
+(chosen on normal + stress validation). Validation macro F0.5 0.9791 (stress 0.9774).
+The previous submission v7 (cross-encoder + LightGBM combined by a stacker, public LB 0.970) is
+steps 10–12 below.
 
 Only the provided challenge files are used. No external data, APIs, geocoding or lookups.
 Pretrained weights downloaded: `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`
 (Apache-2.0, 118M parameters), fine-tuned here. The fine-tuned cross-encoder ships in
-`models/ce_model/`, the LightGBM model in `models/v6/`.
+`models/ce_model/`, the final LightGBM in `models/v8lite/`, the step-7 LightGBM in `models/v6/`.
 
-Hardware used: 44-core / 172 GB RAM CPU machine for steps 1–9, one A100 GPU for steps 10–12.
+Hardware used: 44-core / 172 GB RAM CPU machine for steps 1–9, one A100 GPU for steps 10–12
+and 14, a 4-core / 31 GB machine for steps 15–16.
 
 ## Setup
 
@@ -60,7 +63,7 @@ The trained model used for the submission is in `models/v6/` (step 7 recreates i
 The shortlist trim (`--addr-k 5 --both-k 10`) is stored in the model config, so step 9
 scores exactly the pairs written to `candidate_pairs.tsv` (25.7 per S1 on test).
 
-## Cross-encoder + stacker: the submitted v7 (GPU)
+## Steps 10–12: cross-encoder (GPU); with the stacker this was submission v7 (LB 0.970)
 
 Uses the shortlist and LightGBM test scores from steps 8–9. A100: ~35 min training,
 ~110 min test scoring.
@@ -83,12 +86,34 @@ python -m ber.cross_encoder --ce-dir $WORK/ce --steps train valid test \
 python -m ber.stack --ce-dir $WORK/ce --candidate-file output/candidate_pairs.tsv --out-dir output
 ```
 
+## Steps 13–16: the submitted v8-lite
+
+Needs the validation and test cross-encoder scores from step 11
+(`$WORK/ce/valid_scores.parquet`, `$WORK/ce/test_scores_blend.parquet`).
+
+```bash
+# 13. Training entities never used by v6 or the cross-encoder (sample offset 1M) + the same
+#     30k validation entities; word IDF tables for the distinctive-word features
+python -m ber.run_candidates --split train --clean-dir $WORK/clean --splits $WORK/splits.parquet     --n-train 300000 --train-offset 1000000 --n-valid 30000 --threads 44     --neighbors $WORK/state_neighbors.json --out $WORK/cands_stack.parquet
+python -m ber.word_idf --clean-dir $WORK/clean
+# 14. Cross-encoder scores for training pairs. We scored the first 3 chunks (6M pairs of the
+#     sorted pair list, ~109k entities) within our GPU budget; --max-chunks 3 reproduces that.
+python -m ber.ce_prep pairs --cands $WORK/cands_stack.parquet --out $WORK/stack_pairs.parquet
+python -m ber.ce_prep records --data-dir $DATA --split train --pairs $WORK/stack_pairs.parquet     --out $WORK/records_stack.parquet
+python -m ber.cross_encoder --ce-dir $WORK/ce --steps score --pairs $WORK/stack_pairs.parquet     --records $WORK/records_stack.parquet --scores-out $WORK/ce_stack.parquet --max-chunks 3
+python -m ber.ce_prep from-chunks --pairs $WORK/stack_pairs.parquet --chunks-dir $WORK/ce_stack.chunks     --out $WORK/ce_stack_partial.parquet
+python -m ber.ce_prep merge --inputs $WORK/ce_stack_partial.parquet $WORK/ce/valid_scores.parquet     --out $WORK/ce_train.parquet
+# 15. Train on the 99k training entities whose candidates all have a cross-encoder score (v7's
+#     shortlist: addr top-5 + combined top-10 per source); prints normal + stress validation
+python -m ber.matcher train --data-dir $DATA --clean-dir $WORK/clean --cands $WORK/cands_stack.parquet     --model-dir models/v8lite --extra-scores $WORK/ce_train.parquet --require-extra     --addr-k 5 --both-k 10 --drop-features sup_,addr_freq_     --word-idf $WORK/clean/train_token_idf.parquet --rounds 300 --lr 0.1
+# 16. Test prediction -> output/matching_results.tsv, output/candidate_pairs.tsv
+python -m ber.predict --clean-dir $WORK/clean --cands $WORK/cands_test.parquet --model-dir models/v8lite     --extra-scores $WORK/ce/test_scores_blend.parquet --word-idf $WORK/clean/test_token_idf.parquet     --out-dir output --batch-s1 150000
+```
+
 ## Experiments that were not submitted
 
-- `v8`-style runs: full 55/S1 shortlist with cross-encoder scores as LightGBM features
-  (`matcher --extra-scores`) and distinctive-word features (`ber.word_idf`, `matcher --word-idf`).
-  LightGBM + word features alone reached validation 0.9721 (stress 0.9685); the cross-encoder
-  version could not be finished for lack of GPU time.
+- Full v8: the 55/S1 shortlist (recall 98.2%) with cross-encoder features on all pairs; it needed
+  ~68M more cross-encoder scores and could not be finished in time.
 
 ## Checks and analysis tools
 
@@ -118,5 +143,7 @@ python -m ber.compare_outputs --data-dir $DATA --old A/matching_results.tsv --ne
 | `src/ber/export_ce.py`, `cross_encoder.py`, `stack.py` | Optional cross-encoder stage and score stacking |
 | `src/ber/metric.py` | Official macro F0.5 |
 | `src/ber/eval_candidates.py`, `analyze_errors.py`, `oracle.py`, `compare_outputs.py`, `inspect_test.py`, `audit_normalize.py`, `tune_blocking.py` | Analysis tools |
-| `models/v6/` | Trained LightGBM models and chosen threshold |
+| `models/v8lite/` | Final LightGBM (with cross-encoder and word features) and chosen threshold |
+| `models/ce_model/` | Fine-tuned cross-encoder |
+| `models/v6/` | Step-7 LightGBM (shortlist scores used by steps 10–12) |
 | `tests/` | Unit tests for normalisation |

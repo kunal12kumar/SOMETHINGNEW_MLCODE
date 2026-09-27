@@ -11,7 +11,14 @@ We normalise names and addresses (including romanising eight Indian scripts) and
 - a **two-stage LightGBM** on string-similarity and within-entity competition features
 - a fine-tuned **multilingual cross-encoder** (MiniLM, Apache-2.0, 118M parameters) that reads both raw records together
 
-A small **stacking model** combines the two scores. Final matches apply a **one-owner rule** (each S2/S3 record belongs to at most one S1 entity, which holds for all 7.6M labelled records) and a threshold chosen on both normal validation and a **"stress" validation** that mimics the test set's higher density of look-alike businesses. Results on 30,000 held-out entities: macro F0.5 **0.9776** (stress **0.9759**), against 0.9669 (0.9634) for LightGBM alone. Public leaderboard: **0.970** (LightGBM alone: 0.9575). Only the provided files are used, with permissively licensed libraries and models.
+In the submitted version (**v8-lite**), the cross-encoder score, with its rank and gap within the entity, is fed into the LightGBM as a feature, together with **distinctive-word features** (rare name words with no counterpart on the other side). Final matches apply a **one-owner rule** (each S2/S3 record belongs to at most one S1 entity, which holds for all 7.6M labelled records) and a threshold chosen on both normal validation and a **"stress" validation** that mimics the test set's higher density of look-alike businesses.
+
+Results on 30,000 held-out entities, macro F0.5 (stress in brackets):
+- **v8-lite: 0.9791 (0.9774)**
+- v7, the two models combined by a stacker: 0.9776 (0.9759), public leaderboard **0.970**
+- LightGBM alone: 0.9669 (0.9634), public leaderboard 0.9575
+
+Only the provided files are used, with permissively licensed libraries and models.
 
 ---
 
@@ -41,7 +48,7 @@ A small **stacking model** combines the two scores. Final matches apply a **one-
   Pure string-similarity features handle the second kind poorly. A model that reads the words does not.
 
 ### 2.2 Solution Strategy
-**Approach Type:** Blocking + two complementary pair scorers (feature-based LightGBM + transformer cross-encoder) + stacking + one-owner assignment  
+**Approach Type:** Blocking + transformer cross-encoder + feature-based LightGBM that uses the cross-encoder score as a feature + one-owner assignment  
 **Core Innovation:**
 - State-blocked retrieval that combines name and address in one TF-IDF vector.
 - Data-driven state repair: a city → state map learned from S1, and "neighbour" states learned from labels.
@@ -92,7 +99,22 @@ Generalisation to the unseen country: all LightGBM features are similarities or 
 - **Training:** 3,000,000 shortlist pairs from 150,000 training-fold entities, each shown in both orders (6M examples); 1 epoch, batch 256, learning rate 5e-5 with linear warm-up, bf16 on one A100 (35 min).
 - Scoring the 44.5M test pairs took 110 minutes.
 
-**Stacker (final scorer):**
+**Final scorer, v8-lite (submitted):** the two-stage LightGBM above, retrained with extra inputs:
+- **Cross-encoder features:** the CE probability, its rank within the S1 entity, gap to the entity's best CE score, gap to the best of the same source, and the number of candidates the CE scores above 0.5. `ce0_gap` is the second most important feature after the stage-1 probability.
+- **Distinctive-word features:**
+  - For each pair, the core-name words with no fuzzy counterpart (ratio ≥ 80) on the other side.
+  - The largest and summed rarity (IDF, computed over the split's own S2+S3 names) of those words.
+  - How many there are on each side.
+
+  This targets siblings such as "Great **Ventures**" vs "Great **Infra**". On LightGBM alone it added +0.005 (stress +0.0056).
+- Support and address-frequency features are left out: they hurt the leaderboard in v4.
+- **Training data:**
+  - 99,062 training-fold entities never seen by v6 or the cross-encoder, drawn from a fixed random order with offset 1M.
+  - We only used entities whose candidates all have cross-encoder scores: 3 chunks, the GPU budget we had.
+  - The same candidate set as v7 (address top-5 + combined top-10), 3.37M pairs; 300 rounds, learning rate 0.1.
+- The same 30,000 validation entities as all earlier versions, never used for training.
+
+**Stacker (v7):**
 - A small LightGBM (300 rounds, 31 leaves) on:
   - the two probabilities, their product and difference
   - each model's rank, gap to best and gap to best-of-source within the S1 entity
@@ -104,7 +126,7 @@ Generalisation to the unseen country: all LightGBM features are similarities or 
 - One-owner rule first: each S2/S3 record is kept only for its highest-scoring S1.
 - The threshold maximises **stress** macro F0.5 among thresholds within 0.0005 of the best **normal** macro F0.5.
 - **Stress validation** repeats every hard negative (a non-match that either model scores above 0.3), so look-alikes are twice as common, as observed on test.
-- Chosen: **stacker, threshold 0.80**.
+- Chosen: **v8-lite, threshold 0.75** (v7: stacker, threshold 0.80).
 
 **Validation design:** entity-grouped split (10% of S1 by a hash of the ID). Validation entities are never used to train LightGBM or the cross-encoder.
 
@@ -119,7 +141,8 @@ Validation on 30,000 held-out S1 entities (official macro F0.5, singletons inclu
 | LightGBM alone (v6 rule, threshold 0.75) | 0.9669 | 0.9634 |
 | Cross-encoder alone (best threshold) | 0.9705 | 0.9680 |
 | Fixed blend 0.7·CE + 0.3·LightGBM | 0.9766 | 0.9746 |
-| **Stacker, threshold 0.80 (submitted)** | **0.9776** | **0.9759** |
+| Stacker, threshold 0.80 (v7) | 0.9776 | 0.9759 |
+| **LightGBM + CE features + word features, threshold 0.75 (v8-lite, submitted)** | **0.9791** | **0.9774** |
 
 History of leaderboard submissions:
 
@@ -128,7 +151,8 @@ History of leaderboard submissions:
 | v2 | base LightGBM features | 0.9668 | 0.957 |
 | v4 | + "support" features, address frequency, 500k training entities | 0.9711 | 0.955 |
 | v6 | v2 features + normalisation fixes + 1M training entities + 25.7/S1 shortlist | 0.9669 | 0.9575 |
-| **v7 (final)** | **v6 + cross-encoder + stacker** | **0.9776** | **0.970** |
+| v7 | v6 + cross-encoder + stacker | 0.9776 | 0.970 |
+| **v8-lite (final)** | **cross-encoder features + distinctive-word features inside LightGBM** | **0.9791** | final upload |
 
 - **Common false positives (wrong merges):**
   - Siblings with the same name at a nearby house number.
@@ -145,7 +169,7 @@ History of leaderboard submissions:
 ---
 
 ## 6. Conclusion
-Careful normalisation and state-blocked name+address retrieval give a compact candidate set (25.7 per entity). A feature-based LightGBM and a multilingual cross-encoder are complementary: the first is strong on structured signals such as numbers, city and state, the second on reading distinctive words, transliterations and trade names. A stacker selected on test-like stress validation combines them to reach macro F0.5 0.978 on held-out data. The main lesson: in entity resolution with look-alike businesses, **validation must mimic the test distractor density**, and model changes should be checked on test outputs, not only on validation scores.
+Careful normalisation and state-blocked name+address retrieval give a compact candidate set (25.7 per entity). A feature-based LightGBM and a multilingual cross-encoder are complementary: the first is strong on structured signals such as numbers, city and state, the second on reading distinctive words, transliterations and trade names. Feeding the cross-encoder score into the LightGBM as a feature, together with distinctive-word features, reaches macro F0.5 0.979 (stress 0.977) on held-out data. The main lesson: in entity resolution with look-alike businesses, **validation must mimic the test distractor density**, and model changes should be checked on test outputs, not only on validation scores.
 
 ---
 
@@ -156,7 +180,12 @@ Careful normalisation and state-blocked name+address retrieval give a compact ca
 1. preprocess → fill_state → splits → state_neighbors → name_freq
 2. run_candidates (train, 1M) → matcher train (LightGBM, `models/v6`) → run_candidates (test) → predict (LightGBM scores + shortlist)
 3. run_candidates (train, 150k) → export_ce → cross_encoder train / valid / test
-4. stack → `output/matching_results.tsv`, `output/candidate_pairs.tsv`
+4. stack: this gave v7.
+5. v8-lite:
+   - run_candidates (train, 300k, offset 1M) → word_idf
+   - cross-encoder scores for the first 3 chunks of training pairs → ce_prep from-chunks / merge
+   - matcher train (`--extra-scores --require-extra --word-idf`, `models/v8lite`)
+   - predict → `output/matching_results.tsv`, `output/candidate_pairs.tsv`
 
 Key modules:
 - `normalize.py`, `lexicon.py`: normalisation.
@@ -167,7 +196,10 @@ Key modules:
 - `stack.py`: stacker, stress validation, final decision.
 - `metric.py`: official macro F0.5.
 
-Trained models ship in `models/` (LightGBM `v6`, cross-encoder `ce_model`).
+Trained models ship in `models/`:
+- `v8lite`: the final LightGBM
+- `ce_model`: the cross-encoder
+- `v6`: the step-2 LightGBM, used for the shortlist and the stacker inputs
 
 **Compliance:**
 - No external data, APIs, geocoding or registries. All rule lists are hand-written conventions, and all learned maps come from the provided files.

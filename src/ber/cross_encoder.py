@@ -197,7 +197,7 @@ def cmd_test(ce: Path, test_scores: Path, candidate_file: Path, out_dir: Path, t
 
 
 def cmd_score(model_dir: Path, pairs_path: Path, records: list[Path], out: Path,
-              part: int, n_parts: int, chunk: int = 2_000_000) -> None:
+              part: int, n_parts: int, chunk: int = 2_000_000, max_chunks: int = 0) -> None:
     """Score any (s1_id, cand_id) parquet. Resumable; --part/--n-parts split work across sessions."""
     tok = AutoTokenizer.from_pretrained(model_dir)
     model = AutoModelForSequenceClassification.from_pretrained(model_dir).cuda()
@@ -206,7 +206,7 @@ def cmd_score(model_dir: Path, pairs_path: Path, records: list[Path], out: Path,
     cdir = out.with_suffix(".chunks")
     cdir.mkdir(parents=True, exist_ok=True)
     n = math.ceil(len(pairs) / chunk)
-    for i in range(part, n, n_parts):
+    for i in range(part, min(n, max_chunks) if max_chunks else n, n_parts):
         f = cdir / f"chunk_{i:04d}.npy"
         if f.exists():
             continue
@@ -234,6 +234,7 @@ def main() -> None:
     ap.add_argument("--model-dir", type=Path, default=None, help="score step: model folder (default ce-dir/ce_model)")
     ap.add_argument("--part", type=int, default=0)
     ap.add_argument("--n-parts", type=int, default=1)
+    ap.add_argument("--max-chunks", type=int, default=0, help="score step: stop after the first N chunks")
     ap.add_argument("--epochs", type=float, default=1.0)
     ap.add_argument("--batch", type=int, default=256)
     ap.add_argument("--lr", type=float, default=5e-5)
@@ -250,7 +251,7 @@ def main() -> None:
         cmd_test(args.ce_dir, args.test_scores, args.candidate_file, args.out_dir, args.threshold)
     if "score" in args.steps:
         cmd_score(args.model_dir or args.ce_dir / "ce_model", args.pairs, args.records, args.scores_out,
-                  args.part, args.n_parts)
+                  args.part, args.n_parts, max_chunks=args.max_chunks)
 
 
 if __name__ == "__main__":

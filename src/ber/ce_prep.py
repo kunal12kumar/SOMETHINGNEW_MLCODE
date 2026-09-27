@@ -27,6 +27,8 @@ def main() -> None:
     p = sub.add_parser("pairs")
     p.add_argument("--cands", type=Path, required=True)
     p.add_argument("--exclude", type=Path, default=None)
+    p.add_argument("--addr-k", type=int, default=0, help="keep addr top-K per source (0 = all)")
+    p.add_argument("--both-k", type=int, default=0, help="keep combined top-K per source (0 = all)")
     p.add_argument("--out", type=Path, required=True)
     r = sub.add_parser("records")
     r.add_argument("--data-dir", type=Path, required=True)
@@ -58,7 +60,9 @@ def main() -> None:
         return
 
     if args.cmd == "pairs":
-        pairs = pd.read_parquet(args.cands, columns=["s1_id", "cand_id"]).drop_duplicates()
+        from .matcher import trim_candidates
+        pairs = trim_candidates(pd.read_parquet(args.cands), args.addr_k, args.both_k)
+        pairs = pairs[["s1_id", "cand_id"]].drop_duplicates()
         n0 = len(pairs)
         if args.exclude:
             done = pd.read_parquet(args.exclude, columns=["s1_id", "cand_id"])

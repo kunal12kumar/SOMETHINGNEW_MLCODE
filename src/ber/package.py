@@ -26,7 +26,7 @@ def main() -> None:
     ap.add_argument("--outputs", type=Path, required=True, help="folder with the two submission TSVs")
     ap.add_argument("--model", type=Path, required=True, help="trained model folder to ship as models/<name>")
     ap.add_argument("--model-name", default="v6")
-    ap.add_argument("--extra-model", type=Path, default=None, help="optional second model folder (e.g. cross-encoder)")
+    ap.add_argument("--extra-model", type=Path, nargs="*", default=[], help="more model folders, shipped under their own names")
     ap.add_argument("--doc", type=Path, required=True)
     ap.add_argument("--team", required=True)
     ap.add_argument("--out", type=Path, required=True)
@@ -46,8 +46,8 @@ def main() -> None:
             else:
                 shutil.copy2(src, code / item)
         shutil.copytree(args.model, code / "models" / args.model_name)
-        if args.extra_model:
-            shutil.copytree(args.extra_model, code / "models" / args.extra_model.name)
+        for extra in args.extra_model:
+            shutil.copytree(extra, code / "models" / extra.name)
         shutil.copy2(args.doc, root / "Documentation_template.md")
 
         args.out.parent.mkdir(parents=True, exist_ok=True)
