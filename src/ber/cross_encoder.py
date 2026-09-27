@@ -196,10 +196,44 @@ def cmd_test(ce: Path, test_scores: Path, candidate_file: Path, out_dir: Path, t
           f"S1 with >=1 match {len(per) / len(s1):.3f}; mean per matched S1 {per.mean():.2f}")
 
 
+def cmd_score(model_dir: Path, pairs_path: Path, records: list[Path], out: Path,
+              part: int, n_parts: int, chunk: int = 2_000_000) -> None:
+    """Score any (s1_id, cand_id) parquet. Resumable; --part/--n-parts split work across sessions."""
+    tok = AutoTokenizer.from_pretrained(model_dir)
+    model = AutoModelForSequenceClassification.from_pretrained(model_dir).cuda()
+    pairs = pd.read_parquet(pairs_path, columns=["s1_id", "cand_id"])
+    rec = pd.concat([pd.read_parquet(r) for r in records]).drop_duplicates("entity_id").set_index("entity_id")["text"]
+    cdir = out.with_suffix(".chunks")
+    cdir.mkdir(parents=True, exist_ok=True)
+    n = math.ceil(len(pairs) / chunk)
+    for i in range(part, n, n_parts):
+        f = cdir / f"chunk_{i:04d}.npy"
+        if f.exists():
+            continue
+        t0 = time.time()
+        p = pairs.iloc[i * chunk:(i + 1) * chunk]
+        a, b = texts(p, rec)
+        np.save(f, score(model, tok, a, b).astype(np.float32))
+        print(f"  chunk {i + 1}/{n} ({time.time() - t0:.0f}s)", flush=True)
+    done = [cdir / f"chunk_{i:04d}.npy" for i in range(n)]
+    if all(f.exists() for f in done):
+        pairs["p_ce"] = np.concatenate([np.load(f) for f in done])
+        pairs.to_parquet(out, index=False)
+        print(f"wrote {out} ({len(pairs):,} pairs)")
+    else:
+        print(f"{sum(f.exists() for f in done)}/{n} chunks done; run the other parts, then this again to merge")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--ce-dir", type=Path, required=True)
     ap.add_argument("--steps", nargs="+", default=["train", "valid", "test"])
+    ap.add_argument("--pairs", type=Path, help="score step: parquet with s1_id, cand_id")
+    ap.add_argument("--records", type=Path, nargs="+", help="score step: record text parquets")
+    ap.add_argument("--scores-out", type=Path, help="score step: output parquet")
+    ap.add_argument("--model-dir", type=Path, default=None, help="score step: model folder (default ce-dir/ce_model)")
+    ap.add_argument("--part", type=int, default=0)
+    ap.add_argument("--n-parts", type=int, default=1)
     ap.add_argument("--epochs", type=float, default=1.0)
     ap.add_argument("--batch", type=int, default=256)
     ap.add_argument("--lr", type=float, default=5e-5)
@@ -214,6 +248,9 @@ def main() -> None:
         cmd_valid(args.ce_dir)
     if "test" in args.steps:
         cmd_test(args.ce_dir, args.test_scores, args.candidate_file, args.out_dir, args.threshold)
+    if "score" in args.steps:
+        cmd_score(args.model_dir or args.ce_dir / "ce_model", args.pairs, args.records, args.scores_out,
+                  args.part, args.n_parts)
 
 
 if __name__ == "__main__":

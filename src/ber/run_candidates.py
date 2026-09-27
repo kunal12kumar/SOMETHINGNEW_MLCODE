@@ -30,6 +30,7 @@ def main() -> None:
     ap.add_argument("--splits", type=Path)
     ap.add_argument("--n-train", type=int, default=150_000)
     ap.add_argument("--n-valid", type=int, default=30_000)
+    ap.add_argument("--train-offset", type=int, default=0, help="skip the first N entities of the training order")
     ap.add_argument("--threads", type=int, default=8)
     ap.add_argument("--neighbors", type=Path, default=None, help="state_neighbors.json")
     ap.add_argument("--out", type=Path, required=True)
@@ -38,7 +39,10 @@ def main() -> None:
     s1 = pd.read_parquet(args.clean_dir / f"{args.split}_source1.parquet", columns=COLS)
     if args.split == "train":
         sp = pd.read_parquet(args.splits)
-        tr = sp.loc[~sp["is_valid"], "entity_id"].sample(args.n_train, random_state=0)
+        # The sample is a prefix of one fixed random order, so --train-offset N gives
+        # entities that no run with --n-train <= N has used.
+        tr = sp.loc[~sp["is_valid"], "entity_id"].sample(args.n_train + args.train_offset, random_state=0)
+        tr = tr.iloc[args.train_offset:]
         va = sp.loc[sp["is_valid"], "entity_id"].sample(args.n_valid, random_state=0)
         s1 = s1[s1["entity_id"].isin(set(tr) | set(va))]
         roles = pd.concat([pd.Series("train", index=tr.values), pd.Series("valid", index=va.values)])

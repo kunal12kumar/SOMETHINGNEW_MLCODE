@@ -20,7 +20,7 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
-from .features import REC_COLS, group_features, one_owner, pair_features
+from .features import REC_COLS, group_features, one_owner, pair_features, score_features
 from .io import read_ground_truth
 from .metric import macro_f05
 
@@ -108,16 +108,40 @@ def decide(df: pd.DataFrame, score: str, threshold: float, owner: bool = True) -
     return df.loc[keep, ["s1_id", "cand_id"]]
 
 
+def stress_copy(df: pd.DataFrame, score: str, mult: int = 2) -> pd.DataFrame:
+    """Repeat hard negatives (non-matches scored > 0.3) so look-alikes are ~mult x as common, as on test."""
+    hard = df[(df["label"] == 0) & (df[score] > 0.3)]
+    reps = [hard.assign(cand_id=hard["cand_id"] + f"_dup{r}") for r in range(mult - 1)]
+    return pd.concat([df] + reps, ignore_index=True)
+
+
 def tune(df: pd.DataFrame, s1_ids, truth: pd.DataFrame, score: str) -> dict:
-    results = []
-    for owner in (False, True):
-        for t in np.round(np.arange(0.20, 0.96, 0.05), 2):
-            results.append({"owner": owner, "threshold": float(t),
-                            "macro_f05": macro_f05(s1_ids, decide(df, score, t, owner), truth)})
-    res = pd.DataFrame(results)
-    print(res.pivot(index="threshold", columns="owner", values="macro_f05").round(4).to_string())
-    best = res.loc[res["macro_f05"].idxmax()]
-    return {"owner": bool(best["owner"]), "threshold": float(best["threshold"]), "macro_f05": float(best["macro_f05"])}
+    """Threshold with the best stress score among those within 0.0005 of the best normal score."""
+    st = stress_copy(df, score)
+    rows = []
+    for t in np.round(np.arange(0.30, 0.96, 0.05), 2):
+        rows.append({"threshold": float(t),
+                     "normal": macro_f05(s1_ids, decide(df, score, t, True), truth),
+                     "stress": macro_f05(s1_ids, decide(st, score, t, True), truth)})
+    res = pd.DataFrame(rows).set_index("threshold")
+    print(res.round(4).to_string())
+    ok = res[res["normal"] >= res["normal"].max() - 0.0005]
+    t = float(ok["stress"].idxmax())
+    return {"owner": True, "threshold": t, "macro_f05": float(res.loc[t, "normal"]),
+            "stress_f05": float(res.loc[t, "stress"]), "best_normal": float(res["normal"].max())}
+
+
+def add_extra_scores(cands: pd.DataFrame, paths) -> tuple[pd.DataFrame, list[str]]:
+    """Attach external pair scores (s1_id, cand_id, p_ce) as columns ce0, ce1, ..."""
+    names = []
+    for i, path in enumerate(paths or []):
+        name = f"ce{i}"
+        e = pd.read_parquet(path, columns=["s1_id", "cand_id", "p_ce"]).drop_duplicates(["s1_id", "cand_id"])
+        cands = cands.merge(e.rename(columns={"p_ce": name}), on=["s1_id", "cand_id"], how="left")
+        missing = int(cands[name].isna().sum())
+        print(f"extra score {name} from {path}: {missing:,} of {len(cands):,} pairs missing", flush=True)
+        names.append(name)
+    return cands, names
 
 
 def cmd_train(args) -> None:
@@ -128,6 +152,7 @@ def cmd_train(args) -> None:
     gt = gt[gt["s1_id"].isin(set(queries["s1_id"]))]
     cands = cands.merge(gt.assign(label=1), on=["s1_id", "cand_id"], how="left")
     cands["label"] = cands["label"].fillna(0).astype(np.int8)
+    cands, extra = add_extra_scores(cands, args.extra_scores)
     print(f"{len(cands):,} pairs, positives {cands['label'].mean():.3f}, "
           f"candidate recall {cands['label'].sum() / len(gt):.4f}", flush=True)
 
@@ -139,6 +164,8 @@ def cmd_train(args) -> None:
         feats = build_features(cands, load_records(args.clean_dir, "train", ids))
         if args.feature_cache:
             feats.to_parquet(args.feature_cache, index=False)
+    for name in extra:
+        feats = pd.concat([feats, score_features(cands, name)], axis=1)
     drop = tuple(p for p in (args.drop_features or "").split(",") if p)
     feat_cols = [c for c in feats.columns if not (drop and c.startswith(drop))]
     if drop:
@@ -168,7 +195,7 @@ def cmd_train(args) -> None:
     (args.model_dir / "config.json").write_text(json.dumps(
         {"feat_cols": feat_cols, "stage2_cols": models["stage2_cols"], **best,
          "rounds": args.rounds, "learning_rate": args.lr, "num_leaves": args.leaves,
-         "addr_k": args.addr_k, "both_k": args.both_k}, indent=2))
+         "addr_k": args.addr_k, "both_k": args.both_k, "extra_scores": extra}, indent=2))
     imp = pd.Series(models["stage2"].feature_importance("gain"), index=models["stage2_cols"])
     print((imp / imp.sum()).sort_values(ascending=False).head(20).round(4).to_string())
 
@@ -196,6 +223,8 @@ def main() -> None:
     t.add_argument("--leaves", type=int, default=PARAMS["num_leaves"])
     t.add_argument("--feature-cache", type=Path, default=None, help="parquet to reuse features across runs")
     t.add_argument("--drop-features", default="", help="comma-separated feature name prefixes to leave out")
+    t.add_argument("--extra-scores", type=Path, nargs="*", default=None,
+                   help="parquet(s) with s1_id, cand_id, p_ce added as features (must cover train and valid pairs)")
     t.add_argument("--threshold", type=float, default=None, help="fix the threshold instead of the validation best")
     t.add_argument("--addr-k", type=int, default=0, help="keep addr-path top-K per source (0 = all)")
     t.add_argument("--both-k", type=int, default=0, help="keep combined-path top-K per source (0 = all)")

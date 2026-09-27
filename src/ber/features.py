@@ -152,6 +152,19 @@ def group_features(df: pd.DataFrame, score: str) -> pd.DataFrame:
     return out
 
 
+def score_features(df: pd.DataFrame, col: str) -> pd.DataFrame:
+    """An external model score (e.g. cross-encoder) plus its standing within the S1 entity."""
+    s = df[col].astype(np.float32)
+    g = s.groupby(df["s1_id"])
+    out = pd.DataFrame(index=df.index)
+    out[col] = s
+    out[f"{col}_rank"] = g.rank(ascending=False, method="first").astype(np.float32)
+    out[f"{col}_gap"] = (g.transform("max") - s).astype(np.float32)
+    out[f"{col}_gap_src"] = (s.groupby([df["s1_id"], df["cand_source"]]).transform("max") - s).astype(np.float32)
+    out[f"{col}_n05"] = (s > 0.5).groupby(df["s1_id"]).transform("sum").astype(np.float32)
+    return out
+
+
 def one_owner(df: pd.DataFrame, score: str) -> np.ndarray:
     """True where this S1 entity is the highest-scoring owner of the candidate record.
 

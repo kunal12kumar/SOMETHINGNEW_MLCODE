@@ -17,8 +17,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from .features import pair_features
-from .matcher import decide, load_models, load_records, predict, trim_candidates
+from .features import pair_features, score_features
+from .matcher import add_extra_scores, decide, load_models, load_records, predict, trim_candidates
 
 
 def write_id_lists(s1_ids: pd.Series, pairs: pd.DataFrame, id_col: str, path: Path) -> None:
@@ -32,7 +32,8 @@ def write_id_lists(s1_ids: pd.Series, pairs: pd.DataFrame, id_col: str, path: Pa
             f.write(f"{a}\t{b}\n")
 
 
-def score_in_batches(cands: pd.DataFrame, clean_dir: Path, models: dict, batch_s1: int) -> np.ndarray:
+def score_in_batches(cands: pd.DataFrame, clean_dir: Path, models: dict, batch_s1: int,
+                     extra: list[str] | None = None) -> pd.DataFrame:
     cands = cands.sort_values("s1_id", kind="stable").reset_index(drop=True)
     s1_codes = pd.factorize(cands["s1_id"])[0]
     bounds = np.searchsorted(s1_codes, np.arange(0, s1_codes.max() + batch_s1 + 1, batch_s1))
@@ -44,6 +45,8 @@ def score_in_batches(cands: pd.DataFrame, clean_dir: Path, models: dict, batch_s
         part = cands.iloc[lo:hi]
         recs = load_records(clean_dir, "test", set(part["s1_id"]) | set(part["cand_id"]))
         feats = pair_features(part, recs)
+        for name in extra or []:
+            feats = pd.concat([feats, score_features(part, name)], axis=1)
         df = pd.concat([part[["s1_id", "cand_id", "cand_source"]], feats], axis=1)
         scores[lo:hi] = predict(models, df)
         print(f"  scored {hi:,}/{len(cands):,} pairs ({time.time() - t0:.0f}s)", flush=True)
@@ -59,6 +62,7 @@ def main() -> None:
     ap.add_argument("--batch-s1", type=int, default=150_000)
     ap.add_argument("--threshold", type=float, default=None, help="override the tuned threshold")
     ap.add_argument("--scores-out", type=Path, default=None, help="optional parquet of all pair scores")
+    ap.add_argument("--extra-scores", type=Path, nargs="*", default=None, help="same score files as in training, in order")
     args = ap.parse_args()
 
     models, cfg = load_models(args.model_dir)
@@ -66,9 +70,12 @@ def main() -> None:
     s1 = pd.read_parquet(args.clean_dir / "test_source1.parquet", columns=["entity_id", "country_norm"])
     # Trim the shortlist exactly as the model was trained, so candidate_pairs.tsv is what the model scores.
     cands = trim_candidates(pd.read_parquet(args.cands), cfg.get("addr_k", 0), cfg.get("both_k", 0))
+    extra = cfg.get("extra_scores", [])
+    assert len(extra) == len(args.extra_scores or []), f"model expects {len(extra)} --extra-scores files"
+    cands, _ = add_extra_scores(cands, args.extra_scores)
     print(f"{len(cands):,} candidate pairs for {len(s1):,} test S1 ({len(cands) / len(s1):.1f} per S1)", flush=True)
 
-    scored = score_in_batches(cands, args.clean_dir, models, args.batch_s1)
+    scored = score_in_batches(cands, args.clean_dir, models, args.batch_s1, extra)
     if args.scores_out:
         scored[["s1_id", "cand_id", "p"]].to_parquet(args.scores_out, index=False)
 
