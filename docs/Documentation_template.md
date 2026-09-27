@@ -11,7 +11,7 @@ We normalise names and addresses (including romanising eight Indian scripts) and
 - a **two-stage LightGBM** on string-similarity and within-entity competition features
 - a fine-tuned **multilingual cross-encoder** (MiniLM, Apache-2.0, 118M parameters) that reads both raw records together
 
-A small **stacking model** combines the two scores. Final matches apply a **one-owner rule** (each S2/S3 record belongs to at most one S1 entity, which holds for all 7.6M labelled records) and a threshold chosen on both normal validation and a **"stress" validation** that mimics the test set's higher density of look-alike businesses. Results on 30,000 held-out entities: macro F0.5 **0.9776** (stress **0.9759**), against 0.9669 (0.9634) for LightGBM alone, whose public leaderboard score was 0.9575. Only the provided files are used, with permissively licensed libraries and models.
+A small **stacking model** combines the two scores. Final matches apply a **one-owner rule** (each S2/S3 record belongs to at most one S1 entity, which holds for all 7.6M labelled records) and a threshold chosen on both normal validation and a **"stress" validation** that mimics the test set's higher density of look-alike businesses. Results on 30,000 held-out entities: macro F0.5 **0.9776** (stress **0.9759**), against 0.9669 (0.9634) for LightGBM alone. Public leaderboard: **0.970** (LightGBM alone: 0.9575). Only the provided files are used, with permissively licensed libraries and models.
 
 ---
 
@@ -128,7 +128,7 @@ History of leaderboard submissions:
 | v2 | base LightGBM features | 0.9668 | 0.957 |
 | v4 | + "support" features, address frequency, 500k training entities | 0.9711 | 0.955 |
 | v6 | v2 features + normalisation fixes + 1M training entities + 25.7/S1 shortlist | 0.9669 | 0.9575 |
-| **v7** | **v6 + cross-encoder + stacker** | **0.9776** | [V7 LB] |
+| **v7 (final)** | **v6 + cross-encoder + stacker** | **0.9776** | **0.970** |
 
 - **Common false positives (wrong merges):**
   - Siblings with the same name at a nearby house number.
