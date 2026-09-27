@@ -1,13 +1,17 @@
 # Business Entity Resolution
 
-Pipeline: normalise → state-blocked TF-IDF candidate search → pair features →
-two-stage LightGBM → one-owner rule → threshold. An optional cross-encoder
-(multilingual MiniLM, Apache-2.0) rescores the same candidates and is combined
-with LightGBM.
+**Submitted pipeline (v7):** normalise → state-blocked TF-IDF candidate search (25.7 per S1) →
+two scorers on every candidate pair — a two-stage LightGBM on similarity features and a
+fine-tuned multilingual cross-encoder on the raw text — → a small stacker combines them →
+one-owner rule → threshold 0.80 (chosen on normal + stress validation).
+Validation macro F0.5 0.9776 (stress 0.9759).
 
 Only the provided challenge files are used. No external data, APIs, geocoding or lookups.
 Pretrained weights downloaded: `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`
-(Apache-2.0, 118M parameters), used only by the optional cross-encoder stage.
+(Apache-2.0, 118M parameters), fine-tuned here. The fine-tuned cross-encoder ships in
+`models/ce_model/`, the LightGBM model in `models/v6/`.
+
+Hardware used: 44-core / 172 GB RAM CPU machine for steps 1–9, one A100 GPU for steps 10–12.
 
 ## Setup
 
@@ -21,7 +25,7 @@ Run everything from this folder with `PYTHONPATH=src`.
 `DATA` = the challenge `dataset/` folder (with `train/` and `test/`), `WORK` = a scratch folder.
 Timings are for 44 CPU cores / 172 GB RAM (Colab TPU v6e-1 runtime used as a CPU machine).
 
-## End-to-end: LightGBM submission (v6)
+## Steps 1–9: data, candidates and LightGBM (on its own this was submission v6)
 
 ```bash
 # 1. Normalise all six source files to parquet                         (~4 min)
@@ -56,20 +60,35 @@ The trained model used for the submission is in `models/v6/` (step 7 recreates i
 The shortlist trim (`--addr-k 5 --both-k 10`) is stored in the model config, so step 9
 scores exactly the pairs written to `candidate_pairs.tsv` (25.7 per S1 on test).
 
-## Optional: cross-encoder stage (GPU)
+## Cross-encoder + stacker: the submitted v7 (GPU)
 
-Runs on the shortlist and scores from above (A100: ~40 min training, ~40 min test scoring).
+Uses the shortlist and LightGBM test scores from steps 8–9. A100: ~35 min training,
+~110 min test scoring.
 
 ```bash
-# export pairs + record texts for the cross-encoder
-python -m ber.export_ce --data-dir $DATA --clean-dir $WORK/clean --cands $WORK/cands_train_1m.parquet \
+# 10. Pairs + raw record texts for the cross-encoder:
+#     150k training-fold S1 (3M sampled pairs) + the same 30k validation S1,
+#     with the v6 LightGBM score for every validation pair
+python -m ber.run_candidates --split train --clean-dir $WORK/clean --splits $WORK/splits.parquet \
+    --n-train 150000 --n-valid 30000 --threads 44 --neighbors $WORK/state_neighbors.json \
+    --out $WORK/cands_train_ce.parquet
+python -m ber.export_ce --data-dir $DATA --clean-dir $WORK/clean --cands $WORK/cands_train_ce.parquet \
     --model-dir models/v6 --out-dir $WORK/ce
-# fine-tune, validate, score test
+# 11. Fine-tune (writes $WORK/ce/ce_model), score validation, score the 44.5M test pairs
+#     (to reuse the shipped model instead: copy models/ce_model to $WORK/ce/ce_model; training is skipped)
 python -m ber.cross_encoder --ce-dir $WORK/ce --steps train valid test \
     --test-scores $WORK/test_scores_v6.parquet --candidate-file output/candidate_pairs.tsv --out-dir $WORK/output_ce
-# combine LightGBM and cross-encoder (normal + stress validation), write the final files
-python -m ber.stack --ce-dir $WORK/ce --candidate-file output/candidate_pairs.tsv --out-dir output_v7
+# 12. Stacker (grouped 5-fold CV on validation), normal + stress validation, final decision;
+#     writes output/matching_results.tsv (and copies candidate_pairs.tsv)
+python -m ber.stack --ce-dir $WORK/ce --candidate-file output/candidate_pairs.tsv --out-dir output
 ```
+
+## Experiments that were not submitted
+
+- `v8`-style runs: full 55/S1 shortlist with cross-encoder scores as LightGBM features
+  (`matcher --extra-scores`) and distinctive-word features (`ber.word_idf`, `matcher --word-idf`).
+  LightGBM + word features alone reached validation 0.9721 (stress 0.9685); the cross-encoder
+  version could not be finished for lack of GPU time.
 
 ## Checks and analysis tools
 
