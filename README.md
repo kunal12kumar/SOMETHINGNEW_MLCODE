@@ -11,7 +11,8 @@ steps 10–12 below.
 Only the provided challenge files are used. No external data, APIs, geocoding or lookups.
 Pretrained weights downloaded: `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`
 (Apache-2.0, 118M parameters), fine-tuned here. The fine-tuned cross-encoder ships in
-`models/ce_model/`, the final LightGBM in `models/v8lite/`, the step-7 LightGBM in `models/v6/`.
+`models/ce_model/`, the final LightGBM in `models/v8lite/`. The step-7 LightGBM (`models/v6/`) is
+not shipped; step 7 recreates it.
 
 Hardware used: 44-core / 172 GB RAM CPU machine for steps 1–9, one A100 GPU for steps 10–12
 and 14, a 4-core / 31 GB machine for steps 15–16.
@@ -59,7 +60,7 @@ python $STUDENT_RESOURCE/utils/validate_submission.py --matching output/matching
     --candidate output/candidate_pairs.tsv --test-dir $DATA/test
 ```
 
-The trained model used for the submission is in `models/v6/` (step 7 recreates it).
+Step 7 writes the model to `models/v6/`.
 The shortlist trim (`--addr-k 5 --both-k 10`) is stored in the model config, so step 9
 scores exactly the pairs written to `candidate_pairs.tsv` (25.7 per S1 on test).
 
@@ -145,5 +146,4 @@ python -m ber.compare_outputs --data-dir $DATA --old A/matching_results.tsv --ne
 | `src/ber/eval_candidates.py`, `analyze_errors.py`, `oracle.py`, `compare_outputs.py`, `inspect_test.py`, `audit_normalize.py`, `tune_blocking.py` | Analysis tools |
 | `models/v8lite/` | Final LightGBM (with cross-encoder and word features) and chosen threshold |
 | `models/ce_model/` | Fine-tuned cross-encoder |
-| `models/v6/` | Step-7 LightGBM (shortlist scores used by steps 10–12) |
 | `tests/` | Unit tests for normalisation |

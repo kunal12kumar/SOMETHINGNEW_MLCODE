@@ -200,7 +200,7 @@ Key modules:
 Trained models ship in `models/`:
 - `v8lite`: the final LightGBM
 - `ce_model`: the cross-encoder
-- `v6`: the step-2 LightGBM, used for the shortlist and the stacker inputs
+- `v6` (the step-2 LightGBM, used for the shortlist and the stacker inputs) is not shipped; the README's step 7 recreates it
 
 **Compliance:**
 - No external data, APIs, geocoding or registries. All rule lists are hand-written conventions, and all learned maps come from the provided files.
